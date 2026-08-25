@@ -1,0 +1,18 @@
+pluginManagement {
+	repositories {
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		// Maven Central mirror (repo.maven.apache.org is unreachable in this environment)
+		maven {
+			name = 'AliyunCentral'
+			url = 'https://maven.aliyun.com/repository/central'
+		}
+		mavenCentral()
+		gradlePluginPortal()
+	}
+}
+
+// Should match your modid
+rootProject.name = 'e33chat-fabric'
