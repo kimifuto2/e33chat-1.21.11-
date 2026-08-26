@@ -1514,6 +1514,8 @@ public class ChatBubbleScreen extends ChatScreen {
             totalH += getMsgHeight(msg);
             prevMsg = msg;
         }
+        // 底部内边距（最新消息与输入栏的间隙）
+        totalH += BOTTOM_MESSAGE_PAD;
         int prevMaxScroll = maxScroll;
         maxScroll = Math.max(0, totalH - areaH);
         this.messageTotalH = totalH;
@@ -2317,6 +2319,7 @@ public class ChatBubbleScreen extends ChatScreen {
     }
 
     private static final int REPLY_BAR_H = 18;
+    private static final int BOTTOM_MESSAGE_PAD = 6;
 
     private void renderReplyBar(DrawContext g, int mouseX, int mouseY) {
         if (replyTargetIndex < 0) return;
