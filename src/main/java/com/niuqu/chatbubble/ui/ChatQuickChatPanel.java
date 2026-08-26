@@ -85,9 +85,8 @@ public class ChatQuickChatPanel {
             String display = font.trimToWidth(phrase, textMaxW);
             boolean hover = mouseX >= px + 4 && mouseX <= hoverRight
                 && mouseY >= rowY && mouseY <= rowY + ROW_H;
-            if (hover) com.niuqu.chatbubble.texture.ColoredTextureRenderer.drawWithAlpha(g,
-                com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG),
-                px + 4, rowY, hoverRight - (px + 4), ROW_H, alpha);
+            if (hover) com.niuqu.chatbubble.render.RoundRectRenderer.fill(g, px + 4, rowY, hoverRight, rowY + ROW_H, 4f,
+                com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.popupHover(), a255));
             g.drawText(font, display, px + 6, rowY + 2, com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.textPrimary(), a255), false);
             int delX = hoverRight - 13;
             int delY = rowY + 1;

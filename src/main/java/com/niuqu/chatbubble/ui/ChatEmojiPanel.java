@@ -151,9 +151,7 @@ public class ChatEmojiPanel {
             boolean hover = mouseX >= ex && mouseX <= ex + EMOTE_SLOT - 1
                 && mouseY >= ey && mouseY <= ey + EMOTE_SLOT - 1;
             if (hover)
-                com.niuqu.chatbubble.texture.ColoredTextureRenderer.drawWithAlpha(g,
-                    com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG),
-                    ex, ey, EMOTE_SLOT - 1, EMOTE_SLOT - 1, alpha);
+                com.niuqu.chatbubble.render.RoundRectRenderer.fill(g, ex, ey, ex + (EMOTE_SLOT - 1), ey + (EMOTE_SLOT - 1), 4f, com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.popupHover(), (int)(255 * alpha)));
             if (i < emotes.size()) {
                 java.io.File f = emotes.get(i);
                 net.minecraft.util.Identifier tex = EmoteStore.texture(f);
@@ -198,9 +196,7 @@ public class ChatEmojiPanel {
             if (ey + SLOT <= cy || ey >= cy + ch) continue;
             if (mouseX >= ex && mouseX <= ex + SLOT - 1
                 && mouseY >= ey && mouseY <= ey + SLOT - 1)
-                com.niuqu.chatbubble.texture.ColoredTextureRenderer.drawWithAlpha(g,
-                    com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG),
-                    ex, ey, SLOT - 1, SLOT - 1, alpha);
+                com.niuqu.chatbubble.render.RoundRectRenderer.fill(g, ex, ey, ex + (SLOT - 1), ey + (SLOT - 1), 4f, com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.popupHover(), (int)(255 * alpha)));
             String emoji = EMOTES[i];
             g.drawText(font, emoji,
                 ex + SLOT / 2 - font.getWidth(emoji) / 2,
@@ -229,9 +225,7 @@ public class ChatEmojiPanel {
             if (ey + KAO_ITEM_H <= cy || ey >= cy + ch) continue;
             if (mouseX >= ex && mouseX <= ex + kColW - 1
                 && mouseY >= ey && mouseY <= ey + KAO_ITEM_H - 1)
-                com.niuqu.chatbubble.texture.ColoredTextureRenderer.drawWithAlpha(g,
-                    com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG),
-                    ex, ey, kColW - 1, KAO_ITEM_H - 1, alpha);
+                com.niuqu.chatbubble.render.RoundRectRenderer.fill(g, ex, ey, ex + (kColW - 1), ey + (KAO_ITEM_H - 1), 4f, com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.popupHover(), (int)(255 * alpha)));
             g.drawText(font, KAO[i],
                 ex + 2, ey + (KAO_ITEM_H - font.fontHeight) / 2, com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.textPrimary(), a255), false);
         }

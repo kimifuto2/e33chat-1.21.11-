@@ -56,9 +56,8 @@ public class ChatSettingsMenu {
             int ry = py + 2 + i * ROW_H;
             boolean hover = mouseX >= px && mouseX <= px + W
                 && mouseY >= ry && mouseY <= ry + ROW_H;
-            if (hover) com.niuqu.chatbubble.texture.ColoredTextureRenderer.drawWithAlpha(g,
-                com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG),
-                px + 1, ry, W - 2, ROW_H, alpha);
+            if (hover) com.niuqu.chatbubble.render.RoundRectRenderer.fill(g, px + 1, ry, px + W - 1, ry + ROW_H, 5f,
+                com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.popupHover(), a255));
             ChatBubbleScreen.drawTextureIconAlpha(g, icons[i], px + 3, ry + 2, 14, alpha);
             int maxTextW = W - 22;
             String label = font.trimToWidth(labels[i], maxTextW);
