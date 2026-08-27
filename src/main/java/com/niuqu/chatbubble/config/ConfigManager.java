@@ -41,6 +41,8 @@ public final class ConfigManager {
         ChatBubbleConfig d = ChatBubbleConfig.defaults();
         return new ChatBubbleConfig(
             c.enabled(), c.theme() != null ? c.theme() : d.theme(),
+            c.themeAccent() != null ? c.themeAccent() : d.themeAccent(),
+            c.themeCustom() != null ? c.themeCustom() : d.themeCustom(),
             c.redDotEnabled(), c.hideChatIcon(), c.animationEnabled(),
             c.systemChatAsBubble(),
             c.antiSpam(), c.chatHistoryEnabled(),

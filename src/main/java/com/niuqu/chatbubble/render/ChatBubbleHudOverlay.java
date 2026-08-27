@@ -27,12 +27,12 @@ public class ChatBubbleHudOverlay {
     private static ChatBubbleConfig cfg() { return ChatBubbleClientSetup.config(); }
 
     private static Identifier chatIconTex() {
-        String theme = cfg().theme().toLowerCase();
+        String theme = Appearance.resolvedTheme().name().toLowerCase();
         return Identifier.of("e33chat", "textures/gui/" + theme + "/chat_icon.png");
     }
 
     private static ChatBubbleTheme theme() {
-        return "light".equalsIgnoreCase(cfg().theme()) ? ChatBubbleTheme.LIGHT : ChatBubbleTheme.DARK;
+        return Appearance.resolvedTheme();
     }
 
     private static ChatBubbleTheme.Colors c() { return Appearance.snapshot(); }

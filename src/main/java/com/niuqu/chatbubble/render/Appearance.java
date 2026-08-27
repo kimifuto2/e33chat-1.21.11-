@@ -1,10 +1,9 @@
 package com.niuqu.chatbubble.render;
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
-import com.niuqu.chatbubble.ChatBubbleScreen;
 import com.niuqu.chatbubble.config.ChatBubbleConfig;
-import com.niuqu.chatbubble.render.ChatBubbleTheme;
 
-import com.niuqu.chatbubble.config.ChatBubbleConfig;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * 外观快照：当前主题的颜色快照（取色统一入口）+ 布局参数宿主。
@@ -12,11 +11,43 @@ import com.niuqu.chatbubble.config.ChatBubbleConfig;
 public final class Appearance {
     private Appearance() {}
 
-    /** 当前主题的颜色快照。 */
+    /** 解析出的基础明暗主题（DARK/LIGHT），纹理目录据此选择。 */
+    public static ChatBubbleTheme resolvedTheme() {
+        ChatBubbleConfig cfg = ChatBubbleClientSetup.config();
+        return ChatBubbleTheme.ColorMode.parse(cfg.theme()) == ChatBubbleTheme.ColorMode.LIGHT
+            ? ChatBubbleTheme.LIGHT : ChatBubbleTheme.DARK;
+    }
+
+    /** 当前主题的颜色快照（含强调色与自定义覆盖）。 */
     public static ChatBubbleTheme.Colors snapshot() {
         ChatBubbleConfig cfg = ChatBubbleClientSetup.config();
-        ChatBubbleTheme theme = "light".equalsIgnoreCase(cfg.theme()) ? ChatBubbleTheme.LIGHT : ChatBubbleTheme.DARK;
-        return theme.colors();
+        ChatBubbleTheme.ColorMode mode = ChatBubbleTheme.ColorMode.parse(cfg.theme());
+        ChatBubbleTheme.Accent accent = ChatBubbleTheme.Accent.parse(cfg.themeAccent());
+        Map<String, Integer> custom = parseCustom(cfg.themeCustom());
+        return ChatBubbleTheme.resolve(mode, accent, custom);
+    }
+
+    /** 自定义配色：字段名→ARGB，非法值丢弃。 */
+    private static Map<String, Integer> parseCustom(Map<String, String> custom) {
+        if (custom == null || custom.isEmpty()) return Map.of();
+        Map<String, Integer> out = new HashMap<>();
+        for (Map.Entry<String, String> e : custom.entrySet()) {
+            Integer v = parseHex(e.getValue());
+            if (v != null) out.put(e.getKey(), v);
+        }
+        return out;
+    }
+
+    /** 支持 "RRGGBB"（不透明）或 "AARRGGBB"；非法返回 null。 */
+    private static Integer parseHex(String hex) {
+        if (hex == null) return null;
+        try {
+            String h = hex.replace("#", "").trim();
+            if (h.length() == 6) return 0xFF000000 | Integer.parseInt(h, 16);
+            if (h.length() == 8) return (int) Long.parseLong(h, 16);
+        } catch (NumberFormatException ignored) {
+        }
+        return null;
     }
 
     /** 消息之间的垂直间距（手改配置文件也可能越界，钳制到 UI 范围）。 */

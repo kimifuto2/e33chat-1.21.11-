@@ -1,6 +1,7 @@
 package com.niuqu.chatbubble.texture;
 
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
+import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.render.ChatBubbleTheme;
 import net.minecraft.util.Identifier;
 
@@ -24,7 +25,6 @@ public final class UiTextureManager {
     }
 
     public static ChatBubbleTheme currentTheme() {
-        return ChatBubbleClientSetup.config().theme().equalsIgnoreCase("light")
-            ? ChatBubbleTheme.LIGHT : ChatBubbleTheme.DARK;
+        return Appearance.resolvedTheme();
     }
 }

@@ -2,10 +2,14 @@ package com.niuqu.chatbubble.config;
 
 import com.google.gson.annotations.SerializedName;
 import java.util.List;
+import java.util.Map;
 
 public record ChatBubbleConfig(
     boolean enabled,
     String theme,
+    // Theme mode: "dark" | "light". `theme` carries this mode.
+    String themeAccent,
+    Map<String, String> themeCustom,
     boolean redDotEnabled,
     boolean hideChatIcon,
     boolean animationEnabled,
@@ -66,7 +70,7 @@ public record ChatBubbleConfig(
 ) {
     public static ChatBubbleConfig defaults() {
         return new ChatBubbleConfig(
-            true, "dark", true, false, true,
+            true, "dark", "blue", Map.of(), true, false, true,
             false, true,
             false, 0, 5, 1000, 4,
             "#1E90FF", "#4A4A4A", "#FFFFFF", "#FFFFFF",
@@ -93,7 +97,7 @@ public record ChatBubbleConfig(
     }
 
     public ChatBubbleConfig withTheme(String theme) {
-        return new ChatBubbleConfig(enabled, theme, redDotEnabled, hideChatIcon, animationEnabled,
+        return new ChatBubbleConfig(enabled, theme, themeAccent, themeCustom, redDotEnabled, hideChatIcon, animationEnabled,
             systemChatAsBubble, antiSpam,
             chatHistoryEnabled, historyRetentionDays, timeSeparatorMinutes,
             panelWidth, bubbleCornerRadius, ownBubbleColor, otherBubbleColor, ownTextColor, otherTextColor,
@@ -105,7 +109,7 @@ public record ChatBubbleConfig(
     }
 
     public ChatBubbleConfig withQuickChatPhrases(List<String> phrases) {
-        return new ChatBubbleConfig(enabled, theme, redDotEnabled, hideChatIcon, animationEnabled,
+        return new ChatBubbleConfig(enabled, theme, themeAccent, themeCustom, redDotEnabled, hideChatIcon, animationEnabled,
             systemChatAsBubble, antiSpam,
             chatHistoryEnabled, historyRetentionDays, timeSeparatorMinutes,
             panelWidth, bubbleCornerRadius, ownBubbleColor, otherBubbleColor, ownTextColor, otherTextColor,
@@ -117,7 +121,7 @@ public record ChatBubbleConfig(
     }
 
     public ChatBubbleConfig withSidebarHidePatterns(List<String> patterns) {
-        return new ChatBubbleConfig(enabled, theme, redDotEnabled, hideChatIcon, animationEnabled,
+        return new ChatBubbleConfig(enabled, theme, themeAccent, themeCustom, redDotEnabled, hideChatIcon, animationEnabled,
             systemChatAsBubble, antiSpam,
             chatHistoryEnabled, historyRetentionDays, timeSeparatorMinutes,
             panelWidth, bubbleCornerRadius, ownBubbleColor, otherBubbleColor, ownTextColor, otherTextColor,
@@ -129,11 +133,23 @@ public record ChatBubbleConfig(
     }
 
     public ChatBubbleConfig withBlockedPlayers(List<String> blocked) {
-        return new ChatBubbleConfig(enabled, theme, redDotEnabled, hideChatIcon, animationEnabled,
+        return new ChatBubbleConfig(enabled, theme, themeAccent, themeCustom, redDotEnabled, hideChatIcon, animationEnabled,
             systemChatAsBubble, antiSpam,
             chatHistoryEnabled, historyRetentionDays, timeSeparatorMinutes,
             panelWidth, bubbleCornerRadius, ownBubbleColor, otherBubbleColor, ownTextColor, otherTextColor,
             soundPublic, soundSystem, soundWhisper, debugLog, preserveInput, colorCodes, sidebarHidePatterns, blocked, quickChatPhrases,
+            mentionBannerEnabled, systemBannerEnabled, mentionBannerDuration, mentionSoundEnabled, mentionRequireAt, mentionWhisperBanner,
+            blurEnabled, panelOpacity, soundVolume, ownMentionNotify, ownQuoteNotify, ownWhisperNotify, bannerCornerRadius, bannerOffsetX, bannerOffsetY, bannerMaxStack,
+            panelAnimStyle, bannerAnimStyle, popupAnimStyle, messageAnimStyle, imageRenderEnabled, receiveImages,
+            uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize);
+    }
+
+    public ChatBubbleConfig withThemeValues(String theme, String themeAccent, Map<String, String> themeCustom) {
+        return new ChatBubbleConfig(enabled, theme, themeAccent, themeCustom, redDotEnabled, hideChatIcon, animationEnabled,
+            systemChatAsBubble, antiSpam,
+            chatHistoryEnabled, historyRetentionDays, timeSeparatorMinutes,
+            panelWidth, bubbleCornerRadius, ownBubbleColor, otherBubbleColor, ownTextColor, otherTextColor,
+            soundPublic, soundSystem, soundWhisper, debugLog, preserveInput, colorCodes, sidebarHidePatterns, blockedPlayers, quickChatPhrases,
             mentionBannerEnabled, systemBannerEnabled, mentionBannerDuration, mentionSoundEnabled, mentionRequireAt, mentionWhisperBanner,
             blurEnabled, panelOpacity, soundVolume, ownMentionNotify, ownQuoteNotify, ownWhisperNotify, bannerCornerRadius, bannerOffsetX, bannerOffsetY, bannerMaxStack,
             panelAnimStyle, bannerAnimStyle, popupAnimStyle, messageAnimStyle, imageRenderEnabled, receiveImages,

@@ -3,6 +3,7 @@ import com.niuqu.chatbubble.store.ChatMessageStore;
 
 import com.niuqu.chatbubble.chat.TemplateMatcher;
 import com.niuqu.chatbubble.network.ServerConfigSavePayload;
+import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.render.ChatBubbleTheme;
 import com.niuqu.chatbubble.texture.ColoredTextureRenderer;
 import com.niuqu.chatbubble.texture.UiElement;
@@ -132,7 +133,7 @@ public class ServerConfigScreen extends Screen {
         whisperV.addAll(whisper);
     }
 
-    private ChatBubbleTheme.Colors c() { return ChatBubbleTheme.DARK.colors(); }
+    private ChatBubbleTheme.Colors c() { return Appearance.snapshot(); }
 
     // ===== 几何：公式与客户端一致，控件宽度固定 =====
     private int dividerX() { return CAT_X + CAT_W + 12; }
@@ -525,12 +526,12 @@ public class ServerConfigScreen extends Screen {
         int th = sbThumbH(trackH, totalH);
         int ty = sbThumbY(top, trackH, th, offset, maxScroll);
         ColoredTextureRenderer.drawWithAlpha(g,
-            UiTextureManager.rl(UiElement.SCROLLBAR_TRACK, ChatBubbleTheme.DARK),
+            UiTextureManager.rl(UiElement.SCROLLBAR_TRACK, Appearance.resolvedTheme()),
             trackX, top, SCROLLBAR_W, bot - top, 0x40 / 255f);
         int base = dragging ? 0xCC
             : sbHovering((int) mx, (int) my, trackX, ty, th) ? 0xAA : 0x88;
         ColoredTextureRenderer.drawWithAlpha(g,
-            UiTextureManager.rl(UiElement.SCROLLBAR_THUMB, ChatBubbleTheme.DARK),
+            UiTextureManager.rl(UiElement.SCROLLBAR_THUMB, Appearance.resolvedTheme()),
             trackX, ty, SCROLLBAR_W, th, base / 255f);
     }
 
@@ -625,7 +626,7 @@ public class ServerConfigScreen extends Screen {
 
     @Override
     public void render(DrawContext g, int mouseX, int mouseY, float partialTick) {
-        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.CONFIG_BG, ChatBubbleTheme.DARK),
+        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.CONFIG_BG, Appearance.resolvedTheme()),
             0, 0, 0f, 0f, width, height, 16, 16, 16, 16);
         tickAnims();
         g.drawText(textRenderer, title, width / 2 - textRenderer.getWidth(title) / 2, 14, c().configTitle(), false);
@@ -639,7 +640,7 @@ public class ServerConfigScreen extends Screen {
             boolean sel = i == selectedCat;
             boolean hover = mouseX >= CAT_X && mouseX <= CAT_X + CAT_W && mouseY >= ly && mouseY < ly + CAT_ROW_H;
             if (sel || hover)
-                g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.HOVER_BG, ChatBubbleTheme.DARK),
+                g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.HOVER_BG, Appearance.resolvedTheme()),
                     CAT_X, ly, 0f, 0f, CAT_W, CAT_ROW_H, 16, 16, 16, 16);
             if (sel)
                 g.fill(CAT_X, ly, CAT_X + 2, ly + CAT_ROW_H, c().configTitle());
@@ -652,7 +653,7 @@ public class ServerConfigScreen extends Screen {
             mouseX, mouseY, treePane.dragging());
 
         // 分类与选项区分隔线
-        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.DIVIDER, ChatBubbleTheme.DARK),
+        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.DIVIDER, Appearance.resolvedTheme()),
             dividerX(), START_Y - 6, 0f, 0f, 1, viewBottom() - (START_Y - 6), 16, 16, 16, 16);
 
         // 右区选项行，硬裁剪到视口；普通行 label 垂直居中对齐按钮（y+6），教程小行顶部对齐（y+2）
@@ -666,7 +667,7 @@ public class ServerConfigScreen extends Screen {
                 int lineX = optLabelX() + textRenderer.getWidth(label) + 8;
                 int lineEnd = optLabelX() + optAreaW() + 4;
                 if (lineX < lineEnd)
-                    g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.DIVIDER, ChatBubbleTheme.DARK),
+                    g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.DIVIDER, Appearance.resolvedTheme()),
                         lineX, y + 15, 0f, 0f, lineEnd - lineX, 1, 16, 16, 16, 16);
                 y += row.height();
                 continue;

@@ -83,15 +83,14 @@ public class ChatBubbleScreen extends ChatScreen {
     }
 
     private ChatBubbleTheme theme() {
-        return "light".equalsIgnoreCase(ChatBubbleClientSetup.config().theme())
-            ? ChatBubbleTheme.LIGHT : ChatBubbleTheme.DARK;
+        return Appearance.resolvedTheme();
     }
 
     private static final int INPUT_H = 14;
     private static final int ICON_S = 14;
 
     public static Identifier iconTex(String name) {
-        String theme = ChatBubbleClientSetup.config().theme().toLowerCase();
+        String theme = Appearance.resolvedTheme().name().toLowerCase();
         return Identifier.of("e33chat", "textures/gui/" + theme + "/" + name + ".png");
     }
 
