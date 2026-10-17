@@ -2974,14 +2974,15 @@ boolean hoverCopy = mouseX >= menuX && mouseX <= menuX + CTX_W
             quoteJumpFrameLogs = 3;
         } else {
             quoteJumpLog(() -> "[e33chat] QUOTEJUMP | ABORT | owner=" + owner
-                + " reason=no target (map miss + content miss)");
+                + " reason=no target (hash miss + map miss + content miss)");
         }
         return true;
     }
 
-    /** 兜底的内容匹配：精确表查不到时，在当前显示的列表里从该消息往前找「发送者 + 内容」都吻合的一条。
-     *  内容重复时取「离引用消息最近」的那条（更可能是本人引用的目标）；找不到（已被历史清理 /
-     *  不在当前视图）返回 -1，由调用方静默处理。日志统一带 src=content 以便和精确表区分。 */
+    /** 最后一级兜底（src=content）：指纹表也查不到时，在当前显示的列表里从该消息往前找
+     *  「发送者 + 内容」都吻合的一条。内容重复时取「离引用消息最近」的那条（更可能是本人
+     *  引用的目标）；找不到（已被历史清理 / 不在当前视图）返回 -1，由调用方静默处理。
+     *  日志统一带 src=content 以便和 src=hash / src=map 区分。 */
     private int findQuotedMessage(int ownerIndex) {
         List<ChatMessageStore.ChatMessage> full = ChatMessageStore.getMessages();
         if (ownerIndex < 0 || ownerIndex >= full.size()) {
@@ -3089,7 +3090,8 @@ if (cmpLogged < 3 && quoteSenderMatches(m, owner.replySender())) {
         return -1;
     }
 
-    /** 引用块指向哪条：先查发送时记下的精确关系（src=map），查不到再退回内容匹配（src=content）。
+    /** 引用块指向哪条：① 服务端同步回来的被引用消息指纹（src=hash，跨客户端精确）
+     *  → ② 发送时记下的本地精确关系（src=map）→ ③ 内容匹配兜底（src=content）。
      *  精确表两条通道：对象身份（同实例）+ 指纹（实例被 withSenderName 换掉后仍能接上）。
      *  命中后不删键（同一引用块重复双击仍精确），靠 QUOTE_TARGET_MAX 的 FIFO 上限回收。
      *  全程不抛异常：对象被替换 / 下标越界 / 表里没有，都只是走兜底。 */
@@ -3097,6 +3099,8 @@ if (cmpLogged < 3 && quoteSenderMatches(m, owner.replySender())) {
         List<ChatMessageStore.ChatMessage> full = ChatMessageStore.getMessages();
         if (ownerIndex >= 0 && ownerIndex < full.size()) {
             ChatMessageStore.ChatMessage owner = full.get(ownerIndex);
+            int byHash = findQuotedByHash(owner, ownerIndex);
+            if (byHash >= 0) return byHash;
             Integer offset = quoteTargetByMessage.get(owner);
             String key = "id";
             if (offset == null) {
@@ -3120,6 +3124,73 @@ if (cmpLogged < 3 && quoteSenderMatches(m, owner.replySender())) {
             }
         }
         return findQuotedMessage(ownerIndex);
+    }
+
+    /** 候选气泡的内容是否就是这个指纹：既比 record 里存下的 messageHash（老数据/未剥 § 的情况），
+     *  也比「重算的明文指纹」（跨客户端时唯一可靠的那个）。 */
+    private static boolean quoteHashMatches(ChatMessageStore.ChatMessage m, String quotedHash) {
+        if (m == null || quotedHash == null || quotedHash.isEmpty()) return false;
+        if (quotedHash.equals(m.messageHash())) return true;
+        return quotedHash.equals(ChatMessageStore.quoteHash(m.content().getString()));
+    }
+
+    /**
+     * ① 精确通道：按服务端同步回来的「被引用消息指纹」在**当前显示列表**里找原文，
+     * 命中返回全量下标，找不到返回 -1（交给 map / content 兜底）。
+     *
+     * <p>为什么优先「离引用消息最近的那条」：同内容消息的 hashCode 相同，指纹本身无法区分
+     * 重复文本；引用总是发生在原文之后，所以离引用块最近的那条最可能就是用户当时引用的
+     * 那一条（和内容兜底同一套启发式，但指纹不受前缀/换行/选字差异影响）。
+     */
+    private int findQuotedByHash(ChatMessageStore.ChatMessage owner, int ownerIndex) {
+        String quotedHash = owner == null ? null : owner.quotedHash();
+        if (quotedHash == null || quotedHash.isEmpty()) return -1;
+        List<ChatMessageStore.ChatMessage> full = ChatMessageStore.getMessages();
+        List<ChatMessageStore.ChatMessage> shown = whisperPartner != null
+            ? ChatMessageStore.getWhisperMessages(whisperPartner)
+            : ChatMessageStore.getPublicMessages();
+        int ownerShown = -1;
+        for (int i = shown.size() - 1; i >= 0; i--) {
+            if (shown.get(i) == owner) { ownerShown = i; break; }
+        }
+        if (ownerShown < 0) {
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | src=hash MISS owner not in shown list | owner="
+                + ownerIndex + " quotedHash=" + quotedHash);
+            return -1;
+        }
+        int scanned = 0;
+        int hits = 0;
+        for (int i = ownerShown - 1; i >= 0; i--) {
+            ChatMessageStore.ChatMessage m = shown.get(i);
+            if (m.isSystem()) continue;
+            scanned++;
+            if (!quoteHashMatches(m, quotedHash)) continue;
+            hits++;
+            int f = indexOfIdentity(full, m);
+            if (f < 0 || f >= ownerIndex) continue;
+            final int hit = f;
+            final int sc = scanned;
+            final int hs = hits;
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | src=hash owner=" + ownerIndex
+                + " quotedHash=" + quotedHash + " shown=" + shown.size() + " scanned=" + sc
+                + " hits=" + hs + " result=" + hit);
+            return f;
+        }
+        // 引用一般总在原文之后；万一数据错位（历史回填顺序、清屏），再往后找最近的一条
+        int forward = -1;
+        for (int i = ownerShown + 1; i < shown.size(); i++) {
+            ChatMessageStore.ChatMessage m = shown.get(i);
+            if (m.isSystem() || !quoteHashMatches(m, quotedHash)) continue;
+            int f = indexOfIdentity(full, m);
+            if (f >= 0 && f != ownerIndex) { forward = f; break; }
+        }
+        final int fwd = forward;
+        final int sc2 = scanned;
+        final int hs2 = hits;
+        quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | src=hash owner=" + ownerIndex
+            + " quotedHash=" + quotedHash + " shown=" + shown.size() + " scanned=" + sc2
+            + " hits=" + hs2 + " result=" + fwd);
+        return forward;
     }
 
     /** 引用跳转后的一次性高亮：目标消息整条盖一层圆角底色，随时间线性淡出后自然消失 ?*/
@@ -3289,13 +3360,17 @@ if (cmpLogged < 3 && quoteSenderMatches(m, owner.replySender())) {
                     String quoteSender = (target.rawPlayerName() != null && !target.rawPlayerName().isEmpty())
                         ? target.rawPlayerName() : target.senderName().getString();
                     String quoted = ChatMessageStore.singleLine(target.content().getString());
+                    // 被引用消息的跨客户端指纹：服务端会原样广播，别人双击我这条的引用块时
+                    // 靠它在全量消息里精确定位原文（src=hash）。必须用「明文去 § 码」算，
+                    // 否则自己带 &颜色码的本地气泡与别人看到的内容算出的值不一致。
+                    String quotedHash = ChatMessageStore.quoteHash(target.content().getString());
                     ChatMessageStore.setPendingReply(quoted, quoteSender);
                     // Optional payload: only send when the server registered e33chat:quote_sync.
                     // Without this guard, right-click quote on servers without the E33Chat
                     // server mod still works locally but can fail on the network layer.
                     if (ClientPlayNetworking.canSend(QuoteSyncPayload.ID)) {
                         try {
-                            ClientPlayNetworking.send(new QuoteSyncPayload(quoteSender, quoted, displayText));
+                            ClientPlayNetworking.send(new QuoteSyncPayload(quoteSender, quoted, displayText, quotedHash));
                         } catch (Exception e) {
                             ChatMessageStore.debugLog(() -> "[e33chat] quote_sync skipped | " + e.getMessage());
                         }
@@ -3341,8 +3416,12 @@ if (cmpLogged < 3 && quoteSenderMatches(m, owner.replySender())) {
                 int selfIndex = indexOfIdentity(ChatMessageStore.getMessages(), sentMsg);
                 if (selfIndex > quoteTarget) {
                     rememberQuoteTarget(sentMsg, selfIndex, quoteTarget);
+                    ChatMessageStore.ChatMessage qTarget = ChatMessageStore.getMessageAt(quoteTarget);
+                    final String qHash = qTarget == null ? ""
+                        : ChatMessageStore.quoteHash(qTarget.content().getString());
                     quoteJumpLog(() -> "[e33chat] QUOTEJUMP | MAP-PUT | self=" + selfIndex
-                        + " target=" + quoteTarget + " offset=" + (selfIndex - quoteTarget));
+                        + " target=" + quoteTarget + " offset=" + (selfIndex - quoteTarget)
+                        + " quotedHash=" + qHash);
                 }
             }
             ChatMessageStore.incrementPendingEcho(text);

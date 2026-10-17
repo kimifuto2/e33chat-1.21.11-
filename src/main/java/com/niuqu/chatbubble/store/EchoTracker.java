@@ -215,7 +215,7 @@ public final class EchoTracker {
     }
 
     record PendingMeta(UUID senderUUID, String quoteSender, String quoteContent,
-                       List<String> mentionTargets, long createdAt) {}
+                       List<String> mentionTargets, String quotedHash, long createdAt) {}
 
     public static PendingMeta removePendingMeta(String messageHash) {
         return pendingMetas.remove(messageHash);
@@ -223,9 +223,9 @@ public final class EchoTracker {
 
     public static void putPendingMeta(String messageHash, UUID senderUUID,
                                       String quoteSender, String quoteContent,
-                                      List<String> mentionTargets) {
+                                      List<String> mentionTargets, String quotedHash) {
         pendingMetas.put(messageHash, new PendingMeta(senderUUID, quoteSender, quoteContent,
-            mentionTargets, System.currentTimeMillis()));
+            mentionTargets, quotedHash, System.currentTimeMillis()));
     }
 
     public static void prunePendingMetas(long cutoff) {

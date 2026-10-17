@@ -71,7 +71,10 @@ public class ChatBubbleMod implements ModInitializer {
         return s;
     }
 
-    private record QuotePending(String quotedSenderName, String quotedContent, String messageHash, long time) {}
+    /** 客户端引用时同步上来的待定引用：{@code messageHash} 是「即将发出的那条消息」的指纹，
+     *  {@code quotedHash} 是「被引用消息」的指纹（服务端只转发，不解释它）。 */
+    private record QuotePending(String quotedSenderName, String quotedContent, String messageHash,
+                                String quotedHash, long time) {}
 
     // A quote that never made it into a sent message (e.g. an anti-spam plugin blocked
     // it) must not tag a later unrelated message — expire after 10s (parity with Forge)
@@ -79,6 +82,13 @@ public class ChatBubbleMod implements ModInitializer {
         QuotePending quote = pendingQuotes.remove(playerUUID);
         if (quote != null && System.currentTimeMillis() - quote.time() > 10_000) return null;
         return quote;
+    }
+
+    /** 客户端送来的指纹仅作为字符串转发：限长避免它被当成「广播放大器」
+     *  （正常值就是 int 的十进制串，最多 11 个字符）。 */
+    private static String clampHash(String hash) {
+        if (hash == null || hash.isEmpty()) return "";
+        return hash.length() <= 64 ? hash : hash.substring(0, 64);
     }
 
     @Override
@@ -116,7 +126,7 @@ public class ChatBubbleMod implements ModInitializer {
                 String messageHash = payload.messageHash();
                 pendingQuotes.put(player.getUuid(),
                     new QuotePending(payload.quotedSenderName(), payload.quotedContent(), messageHash,
-                        System.currentTimeMillis()));
+                        clampHash(payload.quotedHash()), System.currentTimeMillis()));
             });
         });
 
@@ -150,11 +160,13 @@ public class ChatBubbleMod implements ModInitializer {
             String messageHash = quote != null ? quote.messageHash() : String.valueOf(rawText.hashCode());
             String quoteSender = quote != null ? quote.quotedSenderName() : "";
             String quoteContent = quote != null ? quote.quotedContent() : "";
+            // 被引用消息的指纹：客户端算好一起发上来，服务端只做长度护栏后原样广播
+            String quotedHash = quote != null ? quote.quotedHash() : "";
 
             if (quote != null || !mentions.isEmpty()) {
                 ChatMetaPayload meta = new ChatMetaPayload(
                     sender.getUuid(), sender.getName().getString(), messageHash,
-                    quoteSender, quoteContent, mentions);
+                    quoteSender, quoteContent, mentions, quotedHash);
                 for (ServerPlayerEntity p : sender.getEntityWorld().getServer().getPlayerManager().getPlayerList()) {
                     ServerPlayNetworking.send(p, meta);
                 }
@@ -223,7 +235,8 @@ public class ChatBubbleMod implements ModInitializer {
         QuotePending quote = takeQuote(sender.getUuid());
         if (quote == null) return;
         ChatMetaPayload meta = new ChatMetaPayload(sender.getUuid(), sender.getName().getString(),
-            quote.messageHash(), quote.quotedSenderName(), quote.quotedContent(), Collections.emptyList());
+            quote.messageHash(), quote.quotedSenderName(), quote.quotedContent(),
+            Collections.emptyList(), quote.quotedHash());
         for (ServerPlayerEntity p : source.getServer().getPlayerManager().getPlayerList()) {
             ServerPlayNetworking.send(p, meta);
         }

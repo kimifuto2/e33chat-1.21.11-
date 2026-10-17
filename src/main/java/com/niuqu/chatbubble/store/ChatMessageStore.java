@@ -305,6 +305,9 @@ public class ChatMessageStore {
     }
 
     // time is epoch millis so history spans days/weeks without losing the date
+    // quotedHash: 服务端随 ChatMetaPayload 送回来的「被引用消息指纹」——这条消息的引用块
+    // 指向的那条原文（null/空 = 不知道，靠本地 map 或内容兜底）。放在 record 里而不是旁挂
+    // 一张表：withSenderName/withReply/withMerge 换实例时会自动带过去，不会被丢掉。
     public record ChatMessage(
         UUID senderUUID,
         Text senderName,
@@ -318,25 +321,40 @@ public class ChatMessageStore {
         int duplicateCount,
         String rawPlayerName,
         boolean whisper,
-        String whisperPartner
+        String whisperPartner,
+        String quotedHash
     ) {
-        // Wither helpers: field-level updates without rebuilding 13-arg constructors.
+        /** 兼容旧的 13 参调用点（历史回填 / 测试）：没有「被引用消息指纹」时等价于 null。 */
+        public ChatMessage(UUID senderUUID, Text senderName, Text content, long time,
+                           boolean isOwn, boolean isSystem, String replyContent, String replySender,
+                           String messageHash, int duplicateCount, String rawPlayerName,
+                           boolean whisper, String whisperPartner) {
+            this(senderUUID, senderName, content, time, isOwn, isSystem, replyContent, replySender,
+                messageHash, duplicateCount, rawPlayerName, whisper, whisperPartner, null);
+        }
+
+        // Wither helpers: field-level updates without rebuilding 14-arg constructors.
         public ChatMessage withSenderName(Text newSenderName) {
             return new ChatMessage(senderUUID, newSenderName, content, time,
                 isOwn, isSystem, replyContent, replySender, messageHash, duplicateCount,
-                rawPlayerName, whisper, whisperPartner);
+                rawPlayerName, whisper, whisperPartner, quotedHash);
         }
 
-        public ChatMessage withMerge(String newReplyContent, String newReplySender, long newTime, int newDupCount) {
+        public ChatMessage withMerge(String newReplyContent, String newReplySender, String newQuotedHash,
+                                     long newTime, int newDupCount) {
             return new ChatMessage(senderUUID, senderName, content, newTime,
                 isOwn, isSystem, newReplyContent, newReplySender, messageHash, newDupCount,
-                rawPlayerName, whisper, whisperPartner);
+                rawPlayerName, whisper, whisperPartner, newQuotedHash);
         }
 
         public ChatMessage withReply(String newReplyContent, String newReplySender) {
+            return withReply(newReplyContent, newReplySender, quotedHash);
+        }
+
+        public ChatMessage withReply(String newReplyContent, String newReplySender, String newQuotedHash) {
             return new ChatMessage(senderUUID, senderName, content, time,
                 isOwn, isSystem, newReplyContent, newReplySender, messageHash, duplicateCount,
-                rawPlayerName, whisper, whisperPartner);
+                rawPlayerName, whisper, whisperPartner, newQuotedHash);
         }
     }
 
@@ -415,18 +433,22 @@ public class ChatMessageStore {
                 }
                 String mergeReplyContent = null;
                 String mergeReplySender = null;
+                String mergeQuotedHash = null;
                 if (own && pendingReplyContent != null) {
                     mergeReplyContent = pendingReplyContent;
                     mergeReplySender = pendingReplySender;
                 } else if (pending != null && !pending.quoteContent().isEmpty()) {
                     mergeReplyContent = pending.quoteContent();
                     mergeReplySender = pending.quoteSender();
+                    // 合并后的引用块属于「这次发送」，被引用指纹也必须跟着这次走，
+                    // 否则会把上一条的旧引用目标带到新气泡上
+                    mergeQuotedHash = pending.quotedHash();
                 }
                 pendingReplyContent = null;
                 pendingReplySender = null;
                 ChatMessage merged = last.withMerge(
-                    mergeReplyContent, mergeReplySender, System.currentTimeMillis(),
-                    last.duplicateCount() + 1);
+                    mergeReplyContent, mergeReplySender, mergeQuotedHash,
+                    System.currentTimeMillis(), last.duplicateCount() + 1);
                 messages.set(messages.size() - 1, merged);
                 return merged;
             }
@@ -439,6 +461,7 @@ public class ChatMessageStore {
 
         String replyContent = null;
         String replySender = null;
+        String replyQuotedHash = null;
         if (own && pendingReplyContent != null) {
             replyContent = pendingReplyContent;
             replySender = pendingReplySender;
@@ -447,6 +470,7 @@ public class ChatMessageStore {
         } else if (pending != null && !pending.quoteContent().isEmpty()) {
             replyContent = pending.quoteContent();
             replySender = pending.quoteSender();
+            replyQuotedHash = pending.quotedHash();
         }
 
         ChatMessage created = new ChatMessage(
@@ -462,7 +486,8 @@ public class ChatMessageStore {
             1,
             rawPlayerName,
             whisper,
-            whisperPartner
+            whisperPartner,
+            replyQuotedHash
         );
         messages.add(created);
 
@@ -1093,6 +1118,7 @@ public class ChatMessageStore {
                 1,
                 e.senderName(),
                 false,
+                null,
                 null
             ));
             if (!e.isSystem() && !e.senderUUID().equals(new UUID(0, 0)))
@@ -1102,6 +1128,22 @@ public class ChatMessageStore {
 
     public static void applyChatMeta(UUID senderUUID, String senderName, String messageHash,
                                       String quoteSender, String quoteContent, List<String> mentionTargets) {
+        // 旧服务端（没有 quotedHash 字段）的解码路径：等价于「不知道原文，只能内容兜底」
+        applyChatMeta(senderUUID, senderName, messageHash, quoteSender, quoteContent,
+            mentionTargets, "");
+    }
+
+    /**
+     * 服务端广播的引用/提及元数据落到具体气泡上。
+     *
+     * @param quotedHash 被引用消息的内容指纹（{@link #quoteHash(String)} 算出，可空）。
+     *                   非空时写进 {@link ChatMessage#quotedHash()}，双击引用块即可在**全量
+     *                   消息**里按指纹精确定位原文 —— 这是「其他玩家的引用」也能精确跳的依据。
+     */
+    public static void applyChatMeta(UUID senderUUID, String senderName, String messageHash,
+                                      String quoteSender, String quoteContent, List<String> mentionTargets,
+                                      String quotedHash) {
+        String safeQuotedHash = quotedHash == null ? "" : quotedHash;
         for (int i = messages.size() - 1; i >= 0; i--) {
             ChatMessage msg = messages.get(i);
             // Offline/cracked players fall back to UUID(0,0) on the receiving side,
@@ -1116,7 +1158,7 @@ public class ChatMessageStore {
                 if (msg.duplicateCount() > 1) continue;
                 if (System.currentTimeMillis() - msg.time() > 5_000) continue;
                 if (!quoteContent.isEmpty()) {
-                    messages.set(i, msg.withReply(quoteContent, quoteSender));
+                    messages.set(i, msg.withReply(quoteContent, quoteSender, safeQuotedHash));
                     String playerName = localPlayerSupplier.get() != null
                         ? localPlayerSupplier.get().getName().getString() : "";
                     if (!msg.isOwn() && !playerName.isEmpty()
@@ -1135,7 +1177,33 @@ public class ChatMessageStore {
             // ones here, matching the 10s TTL the consume path already enforces.
             long cutoff = System.currentTimeMillis() - 10_000;
             EchoTracker.prunePendingMetas(cutoff);
-            EchoTracker.putPendingMeta(messageHash, senderUUID, quoteSender, quoteContent, mentionTargets);
+            EchoTracker.putPendingMeta(messageHash, senderUUID, quoteSender, quoteContent,
+                mentionTargets, safeQuotedHash);
         }
+    }
+
+    /**
+     * 「被引用消息」的跨客户端指纹：内容明文（先去掉只影响本地渲染的 § 格式码）的
+     * {@link String#hashCode()}。
+     *
+     * <p>与 {@link ChatMessage#messageHash()} 同一算法，唯一差别是剥掉 § 码 —— 自己发的消息
+     * 在本地可能被 {@code parseColorCodes} 转成 § 形式，剥掉后与别人收到的明文一致，所以
+     * 引用方与原文持有方各自算出的值相同，可用来做跨客户端精确匹配（32 位哈希，理论上
+     * 存在碰撞，但调用点还有发送者/内容兜底，不会跳到完全无关的地方）。
+     */
+    public static String quoteHash(String plain) {
+        if (plain == null || plain.isEmpty()) return "";
+        StringBuilder sb = null;
+        for (int i = 0; i < plain.length(); i++) {
+            char c = plain.charAt(i);
+            if (c == '\u00a7') {
+                if (sb == null) sb = new StringBuilder(plain.length()).append(plain, 0, i);
+                i++;    // § 后面那一个字符是格式码，一起跳过
+                continue;
+            }
+            if (sb != null) sb.append(c);
+        }
+        String stripped = sb == null ? plain : sb.toString();
+        return String.valueOf(stripped.hashCode());
     }
 }

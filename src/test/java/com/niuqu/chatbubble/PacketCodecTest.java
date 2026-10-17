@@ -42,20 +42,50 @@ class PacketCodecTest {
     }
 
     @Test void quoteSyncStable() {
-        assertStable(new QuoteSyncPayload("Steve", "hello [quote]", "hash123"),
+        assertStable(new QuoteSyncPayload("Steve", "hello [quote]", "hash123", "quotedHash456"),
             QuoteSyncPayload.CODEC);
     }
 
     @Test void chatMetaStable() {
         assertStable(new ChatMetaPayload(
                 UUID.fromString("00112233-4455-6677-8899-aabbccddeeff"),
-                "Alex", "mh", "Steve", "quoted content", List.of("target1", "target2")),
+                "Alex", "mh", "Steve", "quoted content", List.of("target1", "target2"),
+                "quotedHash456"),
             ChatMetaPayload.CODEC);
     }
 
     @Test void chatMetaEmptyFieldsStable() {
-        assertStable(new ChatMetaPayload(new UUID(0, 0), "X", "h", "", "", List.of()),
+        assertStable(new ChatMetaPayload(new UUID(0, 0), "X", "h", "", "", List.of(), ""),
             ChatMetaPayload.CODEC);
+    }
+
+    /** 旧版服务端只发到 mentionTargets 为止：新解码器必须容忍缺尾部字段（quotedHash 读成空串），
+     *  不能抛异常（抛出去在网络层就是直接断开连接）。 */
+    @Test void chatMetaDecodesLegacyPayloadWithoutQuotedHash() {
+        ChatMetaPayload original = new ChatMetaPayload(new UUID(0, 0), "X", "h", "A", "q",
+            List.of("t"), "willBeDropped");
+        PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+        // 手工按「旧线格式」写：只到 mentionTargets，不写 quotedHash
+        buf.writeString(original.senderUUID().toString());
+        buf.writeString(original.senderName());
+        buf.writeString(original.messageHash());
+        buf.writeString(original.quoteSender());
+        buf.writeString(original.quoteContent());
+        buf.writeCollection(original.mentionTargets(), PacketByteBuf::writeString);
+        ChatMetaPayload decoded = ChatMetaPayload.CODEC.decode(buf);
+        assertTrue(decoded.isValid(), "legacy payload must decode instead of throwing");
+        assertEquals("", decoded.quotedHash(), "missing trailing field degrades to empty hash");
+        assertEquals("q", decoded.quoteContent(), "the fields before it must survive");
+    }
+
+    /** 截断/损坏的 meta 必须解成 invalid()（senderUUID=null），由接收端整体忽略。 */
+    @Test void chatMetaDecodeTruncatedIsInvalid() {
+        PacketByteBuf buf = new PacketByteBuf(Unpooled.buffer());
+        buf.writeString("00112233-4455-6677-8899-aabbccddeeff");
+        buf.writeString("Alex");
+        // 后面全缺：readString 会越界
+        ChatMetaPayload decoded = ChatMetaPayload.CODEC.decode(buf);
+        assertFalse(decoded.isValid(), "truncated payload must not throw, must be marked invalid");
     }
 
     @Test void historyStable() {

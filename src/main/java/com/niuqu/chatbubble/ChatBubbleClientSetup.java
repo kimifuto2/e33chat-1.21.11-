@@ -64,6 +64,66 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
         }
     }
 
+    /**
+     * 从「服务器地址」里取出主机部分：{@code host:port} / {@code [::1]:port} / 裸 IPv6 都能处理。
+     * 解析失败返回空串（调用方按「非本地」处理，绝不放宽判定）。
+     */
+    private static String hostOf(String address) {
+        if (address == null) return "";
+        String a = address.trim().toLowerCase(java.util.Locale.ROOT);
+        if (a.isEmpty()) return "";
+        if (a.startsWith("[")) {                       // [::1]:25565
+            int end = a.indexOf(']');
+            return end > 0 ? a.substring(0, end + 1) : a;
+        }
+        int first = a.indexOf(':');
+        int last = a.lastIndexOf(':');
+        // 恰好一个冒号 = host:port；零个或多个 = 主机名/裸 IPv6
+        return (first > 0 && first == last) ? a.substring(0, first) : a;
+    }
+
+    /**
+     * 「本地」地址判定：单机 / 局域网 / 私有网段。这类目标要么就是本机，要么在同一个
+     * 内网里（玩家自己开的房间），对它们声明自定义通道既显然安全又必须**首次进房即生效**
+     * （否则要「第二次进服」才有 interop）。
+     *
+     * <p>覆盖：{@code 127.0.0.0/8}（含 127.0.0.1）、{@code localhost}、{@code ::1}、
+     * {@code 10.0.0.0/8}、{@code 172.16.0.0/12}、{@code 192.168.0.0/16}、
+     * {@code *.local}（mDNS）、{@code fe80::/10}（IPv6 链路本地）。
+     * 其余一律当远程（继续走白名单 + JOIN 自愈），不做任何放宽。
+     */
+    static boolean isLocalAddress(String address) {
+        String host = hostOf(address);
+        if (host.isEmpty()) return false;
+        if (host.startsWith("[") && host.endsWith("]"))
+            host = host.substring(1, host.length() - 1);
+        if (host.isEmpty()) return false;
+        if (host.equals("localhost") || host.endsWith(".localhost")) return true;
+        if (host.equals("::1") || host.equals("0:0:0:0:0:0:0:1")) return true;
+        if (host.endsWith(".local")) return true;
+        // IPv6 字面量才有冒号：fe80::/10 = 首段 fe80..febf
+        if (host.indexOf(':') >= 0 && host.length() >= 3 && host.startsWith("fe")) {
+            char c = host.charAt(2);
+            if (c == '8' || c == '9' || c == 'a' || c == 'b') return true;
+        }
+        String[] p = host.split("\\.", -1);
+        if (p.length != 4) return false;               // 不是点分 IPv4（主机名）→ 远程
+        int[] o = new int[4];
+        for (int i = 0; i < 4; i++) {
+            try {
+                o[i] = Integer.parseInt(p[i]);
+            } catch (NumberFormatException e) {
+                return false;
+            }
+            if (o[i] < 0 || o[i] > 255) return false;
+        }
+        if (o[0] == 127) return true;                  // 环回
+        if (o[0] == 10) return true;                   // 10.0.0.0/8
+        if (o[0] == 192 && o[1] == 168) return true;   // 192.168.0.0/16
+        if (o[0] == 172 && o[1] >= 16 && o[1] <= 31) return true;   // 172.16.0.0/12
+        return false;
+    }
+
     private static Path e33ServersPath() {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc == null || mc.runDirectory == null) return null;
@@ -137,16 +197,24 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
      * <p>Fabric 会把 {@code ClientPlayNetworking.getGlobalReceivers()}（即这里注册的集合）
      * 在**配置阶段**声明给服务器；Paper 这类严格校验自定义载荷的服务端会直接以
      * "Invalid custom payload" 踢人。客户端在配置阶段无法得知服务端装了什么模组，因此
-     * 默认只在**集成服务器**（单机 / 局域网）启动时注册；连远程服务器要启用联动时，
-     * 用 config/e33chat/custom-channels.flag 显式打开。重复调用无副作用。
+     * 默认只在**集成服务器**（单机 / 自己是局域网主机）启动时注册，以及连**局域网/私有
+     * 网段地址**（见 {@link #isLocalAddress(String)}）时在配置阶段直接注册；连公网远程
+     * 服务器要启用联动时，按服务器地址白名单（自动维护）放行。重复调用无副作用。
      */
     private static synchronized void registerCustomChannels() {
         if (customChannelsRegistered) return;
         customChannelsRegistered = true;
         ClientPlayNetworking.registerGlobalReceiver(ChatMetaPayload.ID, (payload, context) -> {
+            // 版本不一致/截断时解码器返回占位载荷（senderUUID=null）：整条忽略，只记诊断日志。
+            // 绝不能让半解码的 meta 进 store（会 NPE 或把引用块贴到错的气泡上）。
+            if (!payload.isValid()) {
+                ChatMessageStore.debugLog("[e33chat] chat_meta ignored | undecodable payload (version mismatch?)");
+                return;
+            }
             context.client().execute(() -> ChatMessageStore.applyChatMeta(
                 payload.senderUUID(), payload.senderName(), payload.messageHash(),
-                payload.quoteSender(), payload.quoteContent(), payload.mentionTargets()));
+                payload.quoteSender(), payload.quoteContent(), payload.mentionTargets(),
+                payload.quotedHash()));
         });
         ClientPlayNetworking.registerGlobalReceiver(HistoryPayload.ID, (payload, context) -> {
             context.client().execute(() -> ChatMessageStore.addHistoryMessages(payload.entries()));
@@ -283,7 +351,18 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
             net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationConnectionEvents.START
                 .register((handler, client) -> {
                     String addr = currentServerAddress(client);
-                    if (addr != null && rememberedServers().contains(addr)) registerCustomChannels();
+                    if (addr == null) return;   // 集成服务器：SERVER_STARTING 已注册
+                    // 局域网/私有网段 = 玩家自己的房间：等同单机待遇，配置阶段就注册，
+                    // 不再依赖白名单（否则别人的局域网房间要「第二次进房」才有 interop）。
+                    boolean local = isLocalAddress(addr);
+                    boolean remembered = rememberedServers().contains(addr);
+                    if (local || remembered) registerCustomChannels();
+                    com.mojang.logging.LogUtils.getLogger().info(
+                        "[e33chat] custom payload channels | local={} | remote={} | addr='{}' | channels={}",
+                        local ? "on" : "off",
+                        remembered ? "whitelist" : "not-whitelisted",
+                        addr,
+                        customChannelsRegistered ? "on" : "off");
                 });
             com.mojang.logging.LogUtils.getLogger().info(
                 "[e33chat] custom payload channels | single player/LAN=on | "
@@ -298,7 +377,10 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                 if (forceOff) return;
                 try {
                     String addr = currentServerAddress(client);
-                    if (addr == null) return;   // 单机 / 局域网：走集成服务器那条路径
+                    if (addr == null) return;   // 单机 / 自己是局域网主机：集成服务器那条路径
+                    // 局域网/私有网段在配置阶段就已注册（见 START 钩子），这里只需复查
+                    // 「服务器是否真的装了 E33Chat」并维护白名单，不再是首次生效的分界点。
+                    boolean local = isLocalAddress(addr);
                     // canSend 反映的是「服务器是否声明支持该通道」，因此即使本次没声明也能
                     // 用它复查服务器当前是否真的还装着 E33Chat —— 白名单靠这个自我修复。
                     boolean serverHasE33 =
@@ -315,7 +397,9 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                     if (rememberedServers().contains(addr)) return;
                     rememberServer(addr);
                     com.mojang.logging.LogUtils.getLogger().info(
-                        "[e33chat] server runs E33Chat -> remembered '{}' (interop engages from the next join)",
+                        local
+                            ? "[e33chat] server runs E33Chat -> remembered '{}' (local network: interop already on)"
+                            : "[e33chat] server runs E33Chat -> remembered '{}' (interop engages from the next join)",
                         addr);
                     client.execute(() -> {
                         if (client.player != null) {
