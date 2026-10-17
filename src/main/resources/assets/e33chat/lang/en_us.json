@@ -28,6 +28,7 @@
   "e33chat.config.custom_accent.desc": "Enter #RRGGBB to override the accent (blank = preset)",
   "e33chat.config.custom_panel_bg": "Custom Panel BG (HEX)",
   "e33chat.config.custom_panel_bg.desc": "Enter #RRGGBB to override the panel background (blank = theme default)",
+  "e33chat.channels.auto_enabled": "This server also runs E33Chat: server interop was enabled automatically, effective after you reconnect.",
   "e33chat.config.enabled": "Enable Mod",
   "e33chat.config.enabled.desc": "Turn the custom chat overlay on or off",
   "e33chat.config.red_dot": "Red Dot",

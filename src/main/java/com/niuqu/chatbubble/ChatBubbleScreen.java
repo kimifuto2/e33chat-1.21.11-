@@ -15,6 +15,8 @@ import com.niuqu.chatbubble.render.RoundRectRenderer;
 import com.niuqu.chatbubble.render.UiLayout;
 import com.niuqu.chatbubble.render.MessageGrouping;
 import com.niuqu.chatbubble.render.UiTokens;
+import com.niuqu.chatbubble.render.ChatTextSelection;
+import com.niuqu.chatbubble.render.TextSpan;
 import com.niuqu.chatbubble.store.BlockList;
 import com.niuqu.chatbubble.ui.EmoteStore;
 import com.niuqu.chatbubble.image.BracketCodec;
@@ -168,6 +170,10 @@ public class ChatBubbleScreen extends ChatScreen {
     private int contextX, contextY;
     private static final int CTX_W = 80;
     private static final int CTX_ITEM_H = 18;
+    /** 右键菜单外框圆角：沿用设置菜 ?表情面板/快捷聊天/搜索面板 ?9f（RoundRectRenderer.panel） ?*/
+    private static final float CTX_RADIUS = 9f;
+    /** 菜单内悬 ?选中高亮圆角：沿用设置菜单的「外框内 ?1px + 5f」相对关系 ?*/
+    private static final float CTX_ITEM_RADIUS = 5f;
     private int contextAvatarIndex = -1;
     private int contextAvatarX, contextAvatarY;
 
@@ -210,6 +216,53 @@ public class ChatBubbleScreen extends ChatScreen {
 
     private final List<int[]> bubbleRects = new ArrayList<>();
     private final List<ClickableSpan> clickableSpans = new ArrayList<>();
+    /** 引用块命中矩形（屏幕坐标，每帧随滚动/气泡缩放回填）：{x, y, w, h, 持有该引用的消息下标} ?*/
+    private final List<int[]> quoteRects = new ArrayList<>();
+    /** 引用精确跳转表（主键 = 对象身份）：自己消息 -> (发送时自己的下标 - 被引用消息的全量下标)。
+     *  存「相对距离」而不是绝对下标：消息列表从头部淘汰旧消息时两者同步位移，距离仍指向正确那条。
+     *  查表用 IdentityHashMap，内容完全重复时也能跳到用户当初引用的那一条。 */
+    private final java.util.Map<ChatMessageStore.ChatMessage, Integer> quoteTargetByMessage =
+        new java.util.IdentityHashMap<>();
+    /** 同一批关联的「指纹别名」= messageHash@time：自己消息的回显到达时 EchoTracker 会用
+     *  withSenderName 换掉实例（身份键随之失效），指纹在这种替换后不变，可继续精确命中。 */
+    private final java.util.Map<String, Integer> quoteTargetByFingerprint = new java.util.HashMap<>();
+    /** 关联的插入顺序（存对象），按 FIFO 淘汰，保证两张表合计最多 QUOTE_TARGET_MAX 条 */
+    private final java.util.ArrayDeque<ChatMessageStore.ChatMessage> quoteTargetOrder = new java.util.ArrayDeque<>();
+    private static final int QUOTE_TARGET_MAX = 64;
+    /** 左键按在引用块上：按下只吞掉这次点击（保持选字/无操作语义），跳转只由 mouseClicked 的 doubleClick 分支触发 */
+    private boolean quotePressPending;
+    private double quotePressX, quotePressY;
+    /** 引用跳转高亮：目标消息（用对象身份，列表变动时不会高亮错消息 ? 起始时间；null = 无 ?*/
+    private ChatMessageStore.ChatMessage quoteFlashMsg;
+    private long quoteFlashStart;
+    private static final int QUOTE_FLASH_MS = 1700;
+    /** 引用命中矩形 ?quoteRects 里的下标（仅调试日志用，-1 = 未命中） ?*/
+    private int quoteOwnerRectIndex = -1;
+    /** 跳转后还要打印几帧的 scrollOffset（诊断「是否被自动到底/动画覆盖」，有限次） ?*/
+    private int quoteJumpFrameLogs;
+    /** QUOTEJUMP 诊断行：debugLog 关闭时落盘到 <runDir>/e33chat/quotejump-debug.log   *  保证「点了引用却什么都没有」也能被取证（点一次只写几行） ?*/
+    private static void quoteJumpLog(java.util.function.Supplier<String> msg) {
+        String line = msg.get();
+        ChatMessageStore.debugLog(line);
+        try {
+            java.nio.file.Path dir = net.minecraft.client.MinecraftClient.getInstance()
+                .runDirectory.toPath().resolve("e33chat");
+            java.nio.file.Files.createDirectories(dir);
+            java.nio.file.Path f = dir.resolve("quotejump-debug.log");
+            if (java.nio.file.Files.exists(f) && java.nio.file.Files.size(f) > 262_144L)
+                java.nio.file.Files.deleteIfExists(f);
+            java.nio.file.Files.writeString(f, line + System.lineSeparator(),
+                java.nio.charset.StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.APPEND);
+        } catch (Throwable ignored) {
+            // 诊断写盘失败绝不能影响交互
+        }
+    }
+    /** Per-frame list of rendered text runs (screen space) used for drag selection. */
+    private final List<TextSpan> textSpans = new ArrayList<>();
+    private final ChatTextSelection textSelection = new ChatTextSelection();
+    private double selectionStartX;
+    private double selectionStartY;
 
     private int replyTargetIndex = -1;
     private int copyToastTicks;
@@ -246,7 +299,7 @@ public class ChatBubbleScreen extends ChatScreen {
         if (sidebarOpen) {
             panelX = SIDEBAR_W;
             sidebarAnimating = false; // sidebar is already in place; the panel's
-            // own open animation (by style) handles its entrance — don't let the
+            // own open animation (by style) handles its entrance  ?don't let the
             // sidebar state machine re-drive panelX (slides the whole panel)
         } else {
             panelX = 0;
@@ -316,10 +369,10 @@ public class ChatBubbleScreen extends ChatScreen {
         setFocused(chatField);
         // The chat field's initial text is set before setChangedListener binds,
         // so the open-time value (e.g. "/" from the chat key) never flows through
-        // onInputEdited — sync it once so the IMBlocker IME state is correct.
+        // onInputEdited  ?sync it once so the IMBlocker IME state is correct.
         onInputEdited(chatField.getText());
 
-        // D07-6: 弹层关闭动画钩子——visible 延迟置 false，先播 150ms 关闭动画
+        // D07-6: 弹层关闭动画钩子——visible 延迟 ?false，先 ?150ms 关闭动画
         settingsMenu.closeRequest = () -> beginPopupClose(s -> settingsCloseStart = s,
             () -> settingsMenu.visible = false);
         emojiPanel.closeRequest = () -> beginPopupClose(s -> emojiCloseStart = s,
@@ -623,9 +676,8 @@ public class ChatBubbleScreen extends ChatScreen {
         return Animation.styleCurve(style, t);
     }
 
-    // 上下栏背景透明度：跟面板开合动画同步（150ms），但用线性曲线——
-    // easeOutCubic 前 75ms 就到 87% 不透明，观感=瞬间出现（2.3.13 用户反馈）。
-    private float getBarAlpha() {
+    // 上下栏背景透明度：跟面板开合动画同步（150ms），但用线性曲线—  // easeOutCubic  ?75ms 就到 87% 不透明，观 ?瞬间出现 ?.3.13 用户反馈）
+private float getBarAlpha() {
         if (!ChatBubbleClientSetup.config().animationEnabled()) return 1.0f;
         AnimationStyle style = AnimationStyle.parse(ChatBubbleClientSetup.config().panelAnimStyle());
         if (style == AnimationStyle.NONE) return 1.0f;
@@ -635,7 +687,7 @@ public class ChatBubbleScreen extends ChatScreen {
         return t;
     }
 
-    // Popup open animation (opening only — closing stays instant). The panel
+    // Popup open animation (opening only  ?closing stays instant). The panel
     // renders itself with the given alpha (per-element fade); ZOOM additionally
     // scales it in around the screen center with overshoot.
     // Popup open/close animation (D07-6: closing is no longer instant).
@@ -694,7 +746,7 @@ public class ChatBubbleScreen extends ChatScreen {
         }
     }
 
-    /** 开始弹层关闭动画（D07-6）：动画关/风格 NONE 时立即隐藏，否则 150ms 后由 tick 隐藏。 */
+    /** 开始弹层关闭动画（D07-6）：动画 ?风格 NONE 时立即隐藏，否则 150ms 后由 tick 隐藏 ?*/
     private void beginPopupClose(java.util.function.LongConsumer setCloseStart, Runnable hide) {
         if (!ChatBubbleClientSetup.config().animationEnabled()
                 || AnimationStyle.parse(ChatBubbleClientSetup.config().popupAnimStyle()) == AnimationStyle.NONE) {
@@ -705,7 +757,7 @@ public class ChatBubbleScreen extends ChatScreen {
         setCloseStart.accept(Util.getMeasuringTimeMs());
     }
 
-    /** tick 调用：关闭动画到期后真正隐藏（D07-6）。 */
+    /** tick 调用：关闭动画到期后真正隐藏（D07-6） ?*/
     private void finishPopupClose(long closeStart, Runnable hide) {
         if (closeStart > 0 && Util.getMeasuringTimeMs() - closeStart >= UiTokens.POPUP_CLOSE_MS) {
             hide.run();
@@ -717,6 +769,18 @@ public class ChatBubbleScreen extends ChatScreen {
         int keyCode = input.key();
         int scanCode = input.scancode();
         int modifiers = input.modifiers();
+        // Ctrl+C with a message-text selection copies the selected runs (one per
+        // selected span, joined with '\n') and reuses the existing "copied" toast.
+        // 焦点在输入框时必须让给输入框（复制输入框内选中的文本），否则输入框 ?Ctrl+C 会被这里吞掉
+if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_C && (modifiers & 0x2) != 0
+                && !chatField.isFocused() && textSelection.hasSelection()) {
+            String copied = textSelection.copyText(textSpans);
+            if (!copied.isEmpty()) {
+                client.keyboard.setClipboard(copied);
+                copyToastTicks = 30;
+            }
+            return true;
+        }
         // Ctrl+V with an image in the clipboard uploads it and inserts the code;
         // on the custom-emote tab it adds the image to the emote pack instead.
         if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_V && (modifiers & 0x2) != 0) {
@@ -795,10 +859,10 @@ public class ChatBubbleScreen extends ChatScreen {
         if (keyCode == 265 && this.getFocused() == chatField) { setChatFromHistory(-1); return true; }
         if (keyCode == 264 && this.getFocused() == chatField) { setChatFromHistory(1); return true; }
 
-        // 不调 super.keyPressed（= ChatScreen，内部访问 package-private chatInputSuggestor = null → NPE）。
-        // self 实现 Screen.keyPressed 等价分发：先给 focused widget（chatField TextFieldWidget 处理
-        // backspace/删除/左右/Home/End/Ctrl+A/C/V/X），再 Tab/箭头焦点导航。
-        if (this.getFocused() != null && this.getFocused().keyPressed(input))
+        // 不调 super.keyPressed ? ChatScreen，内部访 ?package-private chatInputSuggestor = null  ?NPE）
+// self 实现 Screen.keyPressed 等价分发：先 ?focused widget（chatField TextFieldWidget 处理
+        // backspace/删除/左右/Home/End/Ctrl+A/C/V/X）， ?Tab/箭头焦点导航
+if (this.getFocused() != null && this.getFocused().keyPressed(input))
             return true;
         net.minecraft.client.gui.navigation.GuiNavigation nav = switch (keyCode) {
             case 258 -> new net.minecraft.client.gui.navigation.GuiNavigation.Tab((input.modifiers() & 0x2) != 0);
@@ -1010,12 +1074,12 @@ public class ChatBubbleScreen extends ChatScreen {
                 return true;
             }
             if (quickChatPanel.visible) {
-                // 输入框聚焦不依赖 widget 点击命中链路（1.21.1/yarn TextFieldWidget 点击不自动聚焦）：
-                // 直接几何判定命中就聚焦，覆盖所有情况
-                if (ChatQuickChatPanel.isInsideInput((int) mouseX, (int) mouseY, panelX, panelW, barTop,
+                // 输入框聚焦不依赖 widget 点击命中链路 ?.21.1/yarn TextFieldWidget 点击不自动聚焦）
+// 直接几何判定命中就聚焦，覆盖所有情
+if (ChatQuickChatPanel.isInsideInput((int) mouseX, (int) mouseY, panelX, panelW, barTop,
                         ChatBubbleClientSetup.config().quickChatPhrases().size())) {
-                    // 与 sidebar 搜索框聚焦同款（Fabric 实测需显式失焦主输入框，否则焦点链被 chatField 占用）
-                    quickChatInput.setVisible(true);
+                    //  ?sidebar 搜索框聚焦同款（Fabric 实测需显式失焦主输入框，否则焦点链 ?chatField 占用
+quickChatInput.setVisible(true);
                     setFocused(quickChatInput);
                     chatField.setFocused(false);
                     return true;
@@ -1085,51 +1149,139 @@ public class ChatBubbleScreen extends ChatScreen {
             }
         }
 
-        // Clickable text
-        if (button == 0) {
-            Style style = getHoveredStyle(mouseX, mouseY);
-            if (style != null && style.getClickEvent() != null) {
-                ClickEvent cev = style.getClickEvent();
-                if (cev instanceof ClickEvent.SuggestCommand sc) {
-                    chatField.setText(sc.command()); return true;
-                }
-                if (cev instanceof ClickEvent.OpenFile of) {
-                    Util.getOperatingSystem().open(of.file()); return true;
-                }
-                if (cev instanceof ClickEvent.OpenUrl ou) {
-                    // Local file:// links (e.g. legacy chatimage messages) are not
-                    // browser URLs; opening them throws URISyntaxException. Only
-                    // hand http(s) to the browser.
-                    String clickUrl = ou.uri() != null ? ou.uri().toString() : null;
-                    if (clickUrl != null && (clickUrl.startsWith("http://") || clickUrl.startsWith("https://"))) {
-                        if (client.player != null && client.player.networkHandler != null) {
-                            client.player.networkHandler.sendChatMessage(clickUrl);
-                        } else {
-                            Util.getOperatingSystem().open(clickUrl);
-                        }
-                    }
-                    return true;
-                }
-                if (cev instanceof ClickEvent.RunCommand rc) {
-                    if (client.player != null && client.player.networkHandler != null) {
-                        String cmd = rc.command();
-                        if (cmd.startsWith("/")) cmd = cmd.substring(1);
-                        client.player.networkHandler.sendChatCommand(cmd);
-                    }
-                    return true;
-                }
-                if (cev instanceof ClickEvent.CopyToClipboard cc) {
-                    client.keyboard.setClipboard(cc.value()); return true;
-                }
+        // 引用块跳转只认双击：单击不跳（保持选字/无操作），拖选经过引用块也不跳。
+        // MC 把同一按键的快速第二击标成 doubleClick=true；第一击仍走下面的选区按下逻辑
+        // 被吞掉，第二击在这里只跳一次（释放路径不再派发引用跳转，所以不会双跳）。
+        if (button == 0 && doubleClick) {
+            int owner = quoteOwnerAt(mouseX, mouseY);
+            final double dbgX = mouseX, dbgY = mouseY;
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | DBLCLICK | raw=(" + click.x() + "," + click.y()
+                + ") local=(" + dbgX + "," + dbgY + ") owner=" + owner
+                + " rects=" + quoteRects.size());
+            if (owner >= 0) {
+                // 清掉第一击可能留下的选区与待派发状态，避免跳转后残留选区 / 二次派发
+                quotePressPending = false;
+                textSelection.clear();
+                handleQuoteClick(mouseX, mouseY);
                 return true;
             }
         }
-        return this.chatField.mouseClicked(click, doubleClick);
+
+        // Text selection: a left press that lands on rendered message text starts a
+        // selection and swallows the click. The link dispatch itself is deferred to
+        // mouseReleased (see handleClickableTextClick) so that it only fires when the
+        // press did not drag  ?otherwise drag-selecting across a link would also
+        // activate the link on press.
+        if (button == 0) {
+            // 消息 textSelection 只在消息区按下时才激活：底栏（输入框等）里按下不能开始消息选区
+// 否则 ?scissor 裁掉 ?rect 仍被记录的消 ?span 会抢走输入框的按 ?拖选
+TextSpan hit = (mouseY >= msgTop && mouseY <= msgBottom) ? findTextSpanAt(mouseX, mouseY) : null;
+            if (hit != null) {
+                if (textSelection.hasSelection()) textSelection.clear();
+                textSelection.begin(hit.messageIndex(), hit.lineIndex(), hit.kind(), charAt(hit, mouseX));
+                selectionStartX = mouseX;
+                selectionStartY = mouseY;
+                return true;
+            }
+            if (textSelection.hasSelection() || textSelection.isDragActive()) textSelection.clear();
+            // 引用块（文本 span 之外的内边距也算）：按下同样吞掉这次点击，避免顺手触发
+            // 链接/命令；真正的跳转只由上面的 doubleClick 分支触发（单击不跳）
+            quotePressPending = beginQuotePress(mouseX, mouseY);
+            final double dbgLocalX = mouseX, dbgLocalY = mouseY;
+            final boolean dbgHit = quotePressPending;
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | PRESS | raw=(" + click.x() + "," + click.y()
+                + ") local=(" + dbgLocalX + "," + dbgLocalY + ") sliding=" + isPanelSliding()
+                + " panelOffset=" + currentPanelOffset() + " rects=" + quoteRects.size()
+                + " hit=" + dbgHit);
+            if (quotePressPending) return true;
+        }
+
+        // Clickable text (also reached from mouseReleased for a non-dragged press on text)
+        if (button == 0 && handleClickableTextClick(mouseX, mouseY)) return true;
+        // 输入框：本屏自己分发点击，必须补上原 ?ParentElement.mouseClicked 的记
+// （setFocused(命中的子控件) + setDragging(true)）。漏了这两步 ?screen.isDragging()
+        // 恒为 false  ?ParentElement.mouseDragged 直接 return  ?TextFieldWidget 永远收不
+// mouseDragged  ?鼠标拖选（以及依赖选区的复 ?粘贴/整段删除）全部失效
+boolean inputHandled = this.chatField.mouseClicked(click, doubleClick);
+        if (inputHandled && button == 0) {
+            setFocused(chatField);
+            setDragging(true);
+        }
+        return inputHandled;
+    }
+
+    /** Dispatches the ClickEvent of the hovered clickable span. Shared by mouseClicked
+     * (clicks that miss text) and mouseReleased (press-on-text that did not drag). */
+    private boolean handleClickableTextClick(double mouseX, double mouseY) {
+        // 引用块不在单击/释放路径里派发：跳转只认 mouseClicked(doubleClick=true)。
+        // 单击引用文字保持原有用途（选字/无操作），拖选经过引用块也绝不跳转。
+        quoteJumpLog(() -> "[e33chat] QUOTEJUMP | TEXTCLICK | local=(" + mouseX + "," + mouseY
+            + ") rects=" + quoteRects.size());
+        Style style = getHoveredStyle(mouseX, mouseY);
+        if (style == null || style.getClickEvent() == null) return false;
+        ClickEvent cev = style.getClickEvent();
+        if (cev instanceof ClickEvent.SuggestCommand sc) {
+            chatField.setText(sc.command()); return true;
+        }
+        if (cev instanceof ClickEvent.OpenFile of) {
+            Util.getOperatingSystem().open(of.file()); return true;
+        }
+        if (cev instanceof ClickEvent.OpenUrl ou) {
+            // Local file:// links (e.g. legacy chatimage messages) are not
+            // browser URLs; opening them throws URISyntaxException. Only
+            // hand http(s) to the browser.
+            String clickUrl = ou.uri() != null ? ou.uri().toString() : null;
+            if (clickUrl != null && (clickUrl.startsWith("http://") || clickUrl.startsWith("https://"))) {
+                // Vanilla semantics: clicking a link OPENS it. This used to push the URL
+                // into chat as a message instead, so a link click sent it to everyone.
+                Util.getOperatingSystem().open(clickUrl);
+            }
+            return true;
+        }
+        if (cev instanceof ClickEvent.RunCommand rc) {
+            if (client.player != null && client.player.networkHandler != null) {
+                String cmd = rc.command();
+                if (cmd.startsWith("/")) cmd = cmd.substring(1);
+                client.player.networkHandler.sendChatCommand(cmd);
+            }
+            return true;
+        }
+        if (cev instanceof ClickEvent.CopyToClipboard cc) {
+            client.keyboard.setClipboard(cc.value()); return true;
+        }
+        return true;
     }
 
     @Override
     public boolean mouseDragged(Click click, double dragX, double dragY) {
+        // 引用块上按下之后又拖动了 = 不是一次点击：清掉待派发标记（拖选经过引用块绝不跳转）
+if (quotePressPending
+            && Math.abs(click.x() - quotePressX) + Math.abs(click.y() - quotePressY) > 3.0) {
+            quotePressPending = false;
+        }
+        // Selection drag first (a press either started a selection or the scrollbar
+        // drag, never both  ?the scrollbar hit-test in mouseClicked returns earlier).
+        if (textSelection.isDragActive()) {
+            double mouseY = click.y();
+            double mx = click.x();
+            if (isPanelSliding()) mx -= currentPanelOffset();
+            TextSpan hit = findTextSpanAt(mx, mouseY);
+            if (hit == null) {
+                // Off the text: keep extending with the nearest span so a sloppy drag
+                // still grows the selection instead of freezing it.
+                textSelection.markMoved();
+                hit = findNearestTextSpan(mx, mouseY);
+            } else if (Math.abs(mx - selectionStartX) + Math.abs(mouseY - selectionStartY) > 3.0) {
+                textSelection.markMoved();
+            }
+            if (hit != null) {
+                textSelection.update(hit.messageIndex(), hit.lineIndex(), hit.kind(), charAt(hit, mx));
+            }
+            autoScrollSelection(mouseY);
+            return true;
+        }
         if (scrollbarDragging && maxScroll > 0) {
+            if (textSelection.hasSelection()) textSelection.clear();
             lastScrollTime = Util.getMeasuringTimeMs();
             int effBottom = newMessageCount > 0 ? barTop - NOTIF_H - 1 : msgBottom;
             int trackH = effBottom - msgTop;
@@ -1150,7 +1302,33 @@ public class ChatBubbleScreen extends ChatScreen {
 
     @Override
     public boolean mouseReleased(Click click) {
+        // 每一路都留一 ?QUOTEJUMP 痕迹，用来区分「释放路径没走到」还是「走到了但没命中
+boolean selDrag = textSelection.isDragActive();
+        boolean selMoved = textSelection.didMove();
+        quoteJumpLog(() -> "[e33chat] QUOTEJUMP | RELEASE | raw=(" + click.x() + "," + click.y()
+            + ") selDrag=" + selDrag + " selMoved=" + selMoved
+            + " pending=" + quotePressPending
+            + " sliding=" + isPanelSliding() + " panelOffset=" + currentPanelOffset()
+            + " rects=" + quoteRects.size());
+        if (textSelection.isDragActive()) {
+            textSelection.endDrag();
+            if (!textSelection.didMove()) {
+                // Press without drag: this was a click on text, so deliver the
+                // deferred link dispatch now (the press swallowed it).
+                double mx = click.x();
+                if (isPanelSliding()) mx -= currentPanelOffset();
+                if (handleClickableTextClick(mx, click.y())) return true;
+                textSelection.clear();
+            }
+            return true;
+        }
         if (scrollbarDragging) { scrollbarDragging = false; return true; }
+        // 引用块：按下时已被吞掉，这里不再派发跳转（单击不跳；双击由 mouseClicked 的
+        // doubleClick 分支处理）。只复位标记并吞掉这次释放，保持与按下对称。
+        if (quotePressPending) {
+            quotePressPending = false;
+            return true;
+        }
         return super.mouseReleased(click);
     }
 
@@ -1235,7 +1413,7 @@ public class ChatBubbleScreen extends ChatScreen {
     private void startUploadFromClipboard() {
         ImageLoader.executor().execute(() -> {
             LocalImageSource.PreparedImage prep = readClipboard();
-            if (prep == null) return; // no image in clipboard — let vanilla paste text
+            if (prep == null) return; // no image in clipboard  ?let vanilla paste text
             client.execute(() -> uploadQueue.enqueue(new com.niuqu.chatbubble.image.UploadQueue.UploadJob(null, prep.bytes(), "clipboard", false, null)));
         });
     }
@@ -1295,7 +1473,7 @@ public class ChatBubbleScreen extends ChatScreen {
         contextAvatarIndex = -1;
     }
 
-    // 屏蔽/取消屏蔽右键菜单目标玩家：名单即时生效 + 从消息列表清掉历史 + 立即写盘
+    // 屏蔽/取消屏蔽右键菜单目标玩家：名单即时生 ?+ 从消息列表清掉历 ?+ 立即写盘
     private void toggleBlockedPlayer() {
         ChatMessageStore.ChatMessage msg = ChatMessageStore.getMessageAt(contextAvatarIndex);
         if (msg == null) return;
@@ -1352,7 +1530,7 @@ public class ChatBubbleScreen extends ChatScreen {
         ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.PANEL_BG),
             fillLeft, 0, panelX + panelW - fillLeft, height, panelOpacity);
 
-        // 上下栏背景只跟开合动画（fade 终点 1.0 不透明），不乘 PANEL_OPACITY（2.3.7 起永久半透明回归）
+        // 上下栏背景只跟开合动画（fade 终点 1.0 不透明），不乘 PANEL_OPACITY ?.3.7 起永久半透明回归
         renderTitleBar(g, mouseX, mouseY, getBarAlpha());
         renderMessages(g, mouseX, mouseY);
         Style hovered = getHoveredStyle(mouseX, mouseY);
@@ -1368,7 +1546,7 @@ public class ChatBubbleScreen extends ChatScreen {
         renderToast(g);
         renderBottomBar(g, mouseX, mouseY, getBarAlpha());
         renderMentionPopup(g, mouseX, mouseY);
-        // 弹层面板（设置/表情/快捷/搜索）画在底栏之上，z 高一层——侧边栏同 z 后画
+        // 弹层面板（设 ?表情/快捷/搜索）画在底栏之上，z 高一层——侧边栏 ?z 后画
         // 会盖住它们，提升弹层 z 到侧边栏之上避免遮挡
         g.getMatrices().pushMatrix();
         g.getMatrices().translate(0, 0);
@@ -1376,9 +1554,9 @@ public class ChatBubbleScreen extends ChatScreen {
         renderPopupWithAnim(g, emojiAnimStart, emojiCloseStart, a -> () -> emojiPanel.render(g, mouseX, mouseY, textRenderer, c(), panelX, panelW, barTop, ICON_S, PAD, a));
         renderPopupWithAnim(g, quickAnimStart, quickCloseStart, a -> () -> quickChatPanel.render(g, mouseX, mouseY, textRenderer, c(), panelX, panelW, barTop, quickChatInput, a));
         renderPopupWithAnim(g, searchAnimStart, searchCloseStart, a -> () -> searchPanel.render(g, mouseX, mouseY, textRenderer, c(), panelX, panelW, barTop, searchInput, searchMatches, searchMatchIdx, a));
-        // 输入框 widget 在 z=50 的 children 循环渲染，会被这里 z=100 的不透明面板背景盖住
-        // （5bb740e 弹层 z 提升引入）——面板打开时在同 z 重画一次，文字/光标才可见。
-        // widget 无背景（drawsBackground=false），只画文字/光标，不遮挡面板内容
+        // 输入 ?widget  ?z=50  ?children 循环渲染，会被这 ?z=100 的不透明面板背景盖住
+        //  ?bb740e 弹层 z 提升引入）——面板打开时在 ?z 重画一次，文字/光标才可见
+// widget 无背景（drawsBackground=false），只画文字/光标，不遮挡面板内容
         if (quickChatPanel.visible && quickChatInput != null) quickChatInput.render(g, mouseX, mouseY, delta);
         if (searchPanel.visible && searchInput != null) searchInput.render(g, mouseX, mouseY, delta);
         g.getMatrices().popMatrix();
@@ -1411,12 +1589,11 @@ public class ChatBubbleScreen extends ChatScreen {
         g.getMatrices().pushMatrix();
         g.getMatrices().translate(0, 0);
         chatField.setX(inputX + panelOffset);
-        // 不调 super.render（ChatScreen.render 访问 package-private chatInputSuggestor，
-        // 跨包无法初始化）；复制 Screen.render 的 widgets 遍历渲染
+        // 不调 super.render（ChatScreen.render 访问 package-private chatInputSuggestor      // 跨包无法初始化）；复 ?Screen.render  ?widgets 遍历渲染
         for (net.minecraft.client.gui.Element w : this.children()) {
             if (w instanceof net.minecraft.client.gui.Drawable d) d.render(g, mouseX, mouseY, delta);
         }
-        // 建议框定位基于 chatField.getScreenX()（屏幕坐标），与 input 同坐标空间渲染
+        // 建议框定位基 ?chatField.getScreenX()（屏幕坐标），与 input 同坐标空间渲
         g.enableScissor(panelX, 0, panelX + panelW, height);
         if (commandSuggestions != null) commandSuggestions.render(g, mouseX, mouseY);
         g.disableScissor();
@@ -1428,8 +1605,7 @@ public class ChatBubbleScreen extends ChatScreen {
     private void renderTitleBar(DrawContext g, int mouseX, int mouseY, float panelAlpha) {
         int ty = titleY;
         int a255 = (int) (255 * panelAlpha);
-        // Content (icons/text) alpha follows only the open/close animation —
-        // panelOpacity must not tint it (2.3.7 regression: permanent 80%
+        // Content (icons/text) alpha follows only the open/close animation       // panelOpacity must not tint it (2.3.7 regression: permanent 80%
         // opacity made icons/text lighter on light themes).
         int c255 = (int) (255 * getAnimProgress());
         ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.TITLE_BAR), panelX, ty, panelW, TITLE_H, panelAlpha);
@@ -1475,6 +1651,8 @@ public class ChatBubbleScreen extends ChatScreen {
         }
         bubbleRects.clear();
         clickableSpans.clear();
+        quoteRects.clear();
+        textSpans.clear();
         List<ChatMessageStore.ChatMessage> messages;
         if (whisperPartner != null) {
             messages = ChatMessageStore.getWhisperMessages(whisperPartner);
@@ -1513,7 +1691,7 @@ public class ChatBubbleScreen extends ChatScreen {
             totalH += getMsgHeight(msg);
             prevMsg = msg;
         }
-        // 底部内边距（最新消息与输入栏的间隙）
+        // 底部内边距（最新消息与输入栏的间隙
         totalH += BOTTOM_MESSAGE_PAD;
         int prevMaxScroll = maxScroll;
         maxScroll = Math.max(0, totalH - areaH);
@@ -1560,6 +1738,16 @@ public class ChatBubbleScreen extends ChatScreen {
         }
         scrollOffset = MathHelper.clamp(scrollOffset, 0, maxScroll);
 
+        // 引用跳转后连 ?3 帧的 scrollOffset：判断是否被「自动到 ?/ 滚动动画」覆盖
+// 只有刚跳转过才有值，点一次只 ?3 行，不会每帧刷屏
+if (quoteJumpFrameLogs > 0) {
+            int n = 4 - quoteJumpFrameLogs;
+            quoteJumpFrameLogs--;
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | AFTER-FRAME" + n + " | scrollOffset=" + scrollOffset
+                + " maxScroll=" + maxScroll + " wasAtBottom=" + wasAtBottom
+                + " animActive=" + scrollAnimActive + " scrollToBottom=" + scrollToBottom);
+        }
+
         g.enableScissor(panelX, effectiveMsgTop, panelX + panelW, effectiveMsgBottom);
 
         List<ChatMessageStore.ChatMessage> fullList = ChatMessageStore.getMessages();
@@ -1588,8 +1776,8 @@ public class ChatBubbleScreen extends ChatScreen {
             int h = getMsgHeight(msg);
             if (prevRenderMsg != null) contentY += Appearance.messageGap();
             int screenY = effectiveMsgTop + contentY - scrollOffset;
-            // showAvatar 必须用“上一条消息”比较；先赋值 prevRenderMsg 再比会恒自比（2.3.16 回归）
-            boolean showAvatar = !(ChatBubbleClientSetup.config().hideRepeatedAvatars() != null
+            // showAvatar 必须用“上一条消息”比较；先赋 ?prevRenderMsg 再比会恒自比 ?.3.16 回归
+boolean showAvatar = !(ChatBubbleClientSetup.config().hideRepeatedAvatars() != null
                 && ChatBubbleClientSetup.config().hideRepeatedAvatars()
                 && MessageGrouping.isSameGroup(prevRenderMsg, msg));
             contentY += h;
@@ -1599,8 +1787,8 @@ public class ChatBubbleScreen extends ChatScreen {
 
             // New-message enter animation, staggered 40ms per message from the
             // tail (250ms window, keyed on msg.time()).
-            // SLIDE: slide in horizontally — own bubbles from right to left,
-            // others from left to right — plus fade. FADE: pure fade, no
+            // SLIDE: slide in horizontally  ?own bubbles from right to left,
+            // others from left to right  ?plus fade. FADE: pure fade, no
             // displacement. ZOOM: scale in around the bubble center with overshoot.
             float mAlpha = 1f;
             int mDx = 0;
@@ -1611,7 +1799,7 @@ public class ChatBubbleScreen extends ChatScreen {
                 if (mstyle != AnimationStyle.NONE) {
                     int tailIdx = messages.size() - 1 - i;
                     // msg.time() is epoch millis (System.currentTimeMillis), so the
-                    // "now" side must use the same clock — the MC render clock is
+                    // "now" side must use the same clock  ?the MC render clock is
                     // nanoTime-based and subtracting it yields a huge negative raw.
                     float raw = (float) (System.currentTimeMillis() - msg.time() - tailIdx * 40L) / 250f;
                     if (raw < 1f) {
@@ -1646,6 +1834,8 @@ public class ChatBubbleScreen extends ChatScreen {
             }
             renderBubble(g, msg, fullIdx, screenY, mouseX, mouseY, mAlpha, showAvatar);
             g.getMatrices().popMatrix();
+            // 引用跳转高亮：整条消息盖一层临时圆角底色，1.7s 淡出（纯提示，不参与命中
+            renderQuoteFlash(g, msg, screenY, h);
             fullIdx++;
         }
         renderScrollbar(g, mouseX, mouseY, effectiveMsgBottom);
@@ -1667,7 +1857,7 @@ public class ChatBubbleScreen extends ChatScreen {
         int trackH = trackBottom - trackTop;
 
         // 纯色填充替代 drawWithAlpha：绕开消息路径 blend/flush 污染
-        // （4844270a 同机制：上游 drawWithAlpha → scrollbar 渐显只显最后一帧）
+        //  ?844270a 同机制：上游 drawWithAlpha  ?scrollbar 渐显只显最后一帧）
         g.fill(trackX, trackTop, trackX + SCROLLBAR_WIDTH, trackBottom,
             ChatBubbleTheme.alphaBlend(c().scrollbar(), (int) (0x1A * scrollbarAlpha)));
 
@@ -1807,10 +1997,13 @@ public class ChatBubbleScreen extends ChatScreen {
             int yy = baseY + 2;
             Style fb = findRootClickStyle(msg.content());
             int sysColor = ChatBubbleTheme.alphaBlend(c().textMuted(), (int)(255 * alpha));
+            int sysLi = 0;
             for (var line : lines) {
                 int lw = textRenderer.getWidth(line);
-                renderLineWithClicks(g, line, panelX + (panelW - lw) / 2, yy, sysColor, fb);
+                renderLineWithClicks(g, line, panelX + (panelW - lw) / 2, yy, sysColor, fb,
+                    index, sysLi, TextSpan.KIND_CONTENT, 1f);
                 yy += textRenderer.fontHeight;
+                sysLi++;
             }
             return;
         }
@@ -1823,7 +2016,7 @@ public class ChatBubbleScreen extends ChatScreen {
         if (!parsed.images().isEmpty()
                 && parsed.images().stream().allMatch(BracketCodec.ImageRef::emote)
                 && parsed.textWithoutImages().getString().isBlank()) {
-            renderEmoteMessage(g, msg, baseY, own, alpha, showAvatar);
+            renderEmoteMessage(g, msg, index, baseY, own, alpha, showAvatar);
             return;
         }
 
@@ -1869,7 +2062,8 @@ public class ChatBubbleScreen extends ChatScreen {
             }
             int nameW = textRenderer.getWidth(nameSeq);
             int startX = own ? (bubbleX + bubbleW - nameW) : bubbleX;
-            g.drawText(textRenderer, nameSeq, startX, nameY, ChatBubbleTheme.alphaBlend(c().nameColor(), (int)(255 * alpha)), false);
+            drawSelectableText(g, nameSeq, startX, nameY, ChatBubbleTheme.alphaBlend(c().nameColor(), (int)(255 * alpha)),
+                index, 0, TextSpan.KIND_NAME, 1f);
         }
 
         int bubbleY = baseY + NAME_H;
@@ -1882,7 +2076,7 @@ public class ChatBubbleScreen extends ChatScreen {
             ? ChatBubbleConfig.parseHexColor(ChatBubbleClientSetup.config().ownTextColor(), 0xFFFFFFFF)
             : ChatBubbleConfig.parseHexColor(ChatBubbleClientSetup.config().otherTextColor(), c().textPrimary());
 
-        // 搜索命中高亮：先画一层圆角黄边（比气泡大 1px），再由气泡底色覆盖内部 → 圆角描边
+        // 搜索命中高亮：先画一层圆角黄边（比气泡大 1px），再由气泡底色覆盖内部  ?圆角描边
         if (index == searchHighlightIndex)
             RoundRectRenderer.fill(g, bubbleX - 1, bubbleY - 1, bubbleX + bubbleW + 1, bubbleY + bubbleH + 1,
                 ChatBubbleClientSetup.config().bubbleCornerRadius() * s, ChatSearchPanel.HIGHLIGHT);
@@ -1899,10 +2093,11 @@ public class ChatBubbleScreen extends ChatScreen {
             int textSX = bubbleX + (int)(BUBBLE_PAD_X * s);
             int textSY = bubbleY + (int)(BUBBLE_PAD_Y * s) + (int)(li * textRenderer.fontHeight * s);
             int beforeLine = clickableSpans.size();
+            int beforeText = textSpans.size();
             g.getMatrices().pushMatrix();
             g.getMatrices().translate(textSX, textSY);
             if (s != 1f) g.getMatrices().scale(s, s);
-            renderLineWithClicks(g, lines.get(li), 0, 0, fgA, fbP);
+            renderLineWithClicks(g, lines.get(li), 0, 0, fgA, fbP, index, li, TextSpan.KIND_CONTENT, s);
             g.getMatrices().popMatrix();
             for (int i = beforeLine; i < clickableSpans.size(); i++) {
                 ClickableSpan sp = clickableSpans.get(i);
@@ -1912,6 +2107,17 @@ public class ChatBubbleScreen extends ChatScreen {
                     Math.max(1, (int)(sp.w * s)),
                     Math.max(1, (int)(sp.h * s)),
                     sp.style));
+            }
+            // Spans were recorded in the scaled matrix' origin space; bring them back
+            // to screen space (same treatment as clickableSpans) or hit-testing would
+            // be offset by the translate/scale.
+            for (int i = beforeText; i < textSpans.size(); i++) {
+                TextSpan sp = textSpans.get(i);
+                textSpans.set(i, sp.withPosition(
+                    textSX + (int)(sp.x() * s),
+                    textSY + (int)(sp.y() * s),
+                    Math.max(1, (int)(sp.w() * s)),
+                    Math.max(1, (int)(sp.h() * s))));
             }
         }
 
@@ -1946,13 +2152,26 @@ public class ChatBubbleScreen extends ChatScreen {
             if (own) { quoteX = bubbleX + bubbleW - quoteW; } else { quoteX = bubbleX; }
             if (quoteX < panelX + PAD) quoteX = panelX + PAD;
             if (quoteX + quoteW > panelX + panelW - PAD) quoteW = panelX + panelW - PAD - quoteX;
-            // 引用块：SDF 圆角（随 bubble_size 缩放）
-            RoundRectRenderer.fill(g, quoteX, quoteY, quoteX + quoteW, quoteY + quoteH, ChatBubbleClientSetup.config().bubbleCornerRadius() * s, ChatBubbleTheme.alphaBlend(c().contextHover(), (int)(255 * alpha)));
+            // 引用块：SDF 圆角（随 bubble_size 缩放
+        RoundRectRenderer.fill(g, quoteX, quoteY, quoteX + quoteW, quoteY + quoteH, ChatBubbleClientSetup.config().bubbleCornerRadius() * s, ChatBubbleTheme.alphaBlend(c().contextHover(), (int)(255 * alpha)));
+            // 点它跳到被引用的原消息（命中矩形与气 ?链接 span 同为屏幕坐标
+            quoteRects.add(new int[]{quoteX, quoteY, quoteW, quoteH, index});
+            int beforeQuote = textSpans.size();
             g.getMatrices().pushMatrix();
             g.getMatrices().translate(quoteX + (int)(4 * s), quoteY + (int)(2 * s));
             if (s != 1f) g.getMatrices().scale(s, s);
-            g.drawText(textRenderer, quoteDisplay, 0, 0, ChatBubbleTheme.alphaBlend(c().textSecondary(), (int)(255 * alpha)), false);
+            drawSelectableText(g, Text.literal(quoteDisplay).asOrderedText(), 0, 0,
+                ChatBubbleTheme.alphaBlend(c().textSecondary(), (int)(255 * alpha)),
+                index, 99, TextSpan.KIND_QUOTE, s);
             g.getMatrices().popMatrix();
+            for (int i = beforeQuote; i < textSpans.size(); i++) {
+                TextSpan sp = textSpans.get(i);
+                textSpans.set(i, sp.withPosition(
+                    quoteX + (int)(4 * s) + (int)(sp.x() * s),
+                    quoteY + (int)(2 * s) + (int)(sp.y() * s),
+                    Math.max(1, (int)(sp.w() * s)),
+                    Math.max(1, (int)(sp.h() * s))));
+            }
         }
 
         bubbleRects.add(new int[]{bubbleX, bubbleY, bubbleW, bubbleH, index});
@@ -1977,12 +2196,12 @@ public class ChatBubbleScreen extends ChatScreen {
             }
             int nameW = textRenderer.getWidth(nameSeq);
             int startX = own ? (avatarX - UiTokens.AVATAR_NAME_GAP - nameW) : (avatarX + Appearance.avatarSize() + UiTokens.AVATAR_GAP);
-            g.drawText(textRenderer, nameSeq, startX, baseY,
-                ChatBubbleTheme.alphaBlend(c().nameColor(), (int) (255 * alpha)), false);
+            drawSelectableText(g, nameSeq, startX, baseY,
+                ChatBubbleTheme.alphaBlend(c().nameColor(), (int) (255 * alpha)), index, 0, TextSpan.KIND_NAME, 1f);
         }
 
         Identifier skin = com.niuqu.chatbubble.render.SkinResolver.getSkin(msg.senderUUID(), msg.rawPlayerName());
-        // 头像顶与名字行顶对齐（2.3.16 曾改内容顶对齐，实测回退老锚点）
+        // 头像顶与名字行顶对齐 ?.3.16 曾改内容顶对齐，实测回退老锚点）
         if (showAvatar) drawPlayerHead(g, skin, avatarX, baseY, Appearance.avatarSize(), Appearance.avatarSize() + 2, alpha);
 
         int maxTextW = 0;
@@ -1997,7 +2216,8 @@ public class ChatBubbleScreen extends ChatScreen {
             Style fb = findRootClickStyle(msg.content());
             int fgA = ChatBubbleTheme.alphaBlend(fg, (int) (255 * alpha));
             for (int li = 0; li < lines.size(); li++)
-                renderLineWithClicks(g, lines.get(li), textX, y + li * textRenderer.fontHeight, fgA, fb);
+                renderLineWithClicks(g, lines.get(li), textX, y + li * textRenderer.fontHeight, fgA, fb,
+                    index, li, TextSpan.KIND_CONTENT, 1f);
             y += lines.size() * textRenderer.fontHeight;
         }
 
@@ -2057,6 +2277,8 @@ public class ChatBubbleScreen extends ChatScreen {
             if (quoteX + quoteW > panelX + panelW - PAD) quoteW = panelX + panelW - PAD - quoteX;
             RoundRectRenderer.fill(g, quoteX, y, quoteX + quoteW, y + textRenderer.fontHeight + 4, ChatBubbleClientSetup.config().bubbleCornerRadius(),
                 ChatBubbleTheme.alphaBlend(c().contextHover(), (int) (255 * alpha)));
+            // 点它跳到被引用的原消息（无气泡消息同样支持）
+            quoteRects.add(new int[]{quoteX, y, quoteW, textRenderer.fontHeight + 4, index});
             g.drawText(textRenderer, quoteDisplay, quoteX + 4, y + 2,
                 ChatBubbleTheme.alphaBlend(c().textSecondary(), (int) (255 * alpha)), false);
         }
@@ -2067,7 +2289,7 @@ public class ChatBubbleScreen extends ChatScreen {
     }
 
     /** QQ-style emote: bubble-less image, max 64px, aligned by direction. */
-    private void renderEmoteMessage(DrawContext g, ChatMessageStore.ChatMessage msg, int baseY, boolean own, float alpha, boolean showAvatar) {
+    private void renderEmoteMessage(DrawContext g, ChatMessageStore.ChatMessage msg, int index, int baseY, boolean own, float alpha, boolean showAvatar) {
         BracketCodec.ParseResult parsed = parseImages(msg);
         if (parsed.images().isEmpty()) return;
         BracketCodec.ImageRef ref = parsed.images().get(0);
@@ -2088,8 +2310,8 @@ public class ChatBubbleScreen extends ChatScreen {
             }
             int nameW = textRenderer.getWidth(nameSeq);
             int startX = own ? (avatarX - UiTokens.AVATAR_NAME_GAP - nameW) : (avatarX + Appearance.avatarSize() + UiTokens.AVATAR_GAP);
-            g.drawText(textRenderer, nameSeq, startX, nameY,
-                ChatBubbleTheme.alphaBlend(c().nameColor(), (int) (255 * alpha)), false);
+            drawSelectableText(g, nameSeq, startX, nameY,
+                ChatBubbleTheme.alphaBlend(c().nameColor(), (int) (255 * alpha)), index, 0, TextSpan.KIND_NAME, 1f);
         }
 
         Identifier skin = com.niuqu.chatbubble.render.SkinResolver.getSkin(msg.senderUUID(), msg.rawPlayerName());
@@ -2125,10 +2347,43 @@ public class ChatBubbleScreen extends ChatScreen {
     }
 
     private void renderLineWithClicks(DrawContext g, OrderedText line, int x, int y, int color) {
-        renderLineWithClicks(g, line, x, y, color, null);
+        renderLineWithClicks(g, line, x, y, color, null, -1, -1, 1, 1f);
     }
 
     private void renderLineWithClicks(DrawContext g, OrderedText line, int x, int y, int color, Style fallback) {
+        renderLineWithClicks(g, line, x, y, color, fallback, -1, -1, 1, 1f);
+    }
+
+    /** Selectable variant: records a TextSpan (for hit-testing) and paints the
+     * selection background before the glyphs, then draws with the selected run
+     * recoloured. x/y are in the current matrix space; the caller back-fills the
+     * span to screen space when the matrix is scaled (bubble path). */
+    private void renderLineWithClicks(DrawContext g, OrderedText line, int x, int y, int color, Style fallback,
+                                      int messageIndex, int lineIndex, int kind, float scale) {
+        TextSpan span = null;
+        if (messageIndex >= 0) {
+            span = new TextSpan(messageIndex, lineIndex, kind, x, y, textRenderer.getWidth(line),
+                textRenderer.fontHeight, orderedTextPlain(line), scale, line);
+            textSpans.add(span);
+        }
+
+        int[] selRange = span != null && textSelection.hasSelection() ? textSelection.rangeFor(span) : null;
+        if (selRange != null) {
+            int sx0 = x + prefixWidth(line, selRange[0]);
+            int sx1 = x + prefixWidth(line, selRange[1]);
+            g.fill(sx0, y, Math.max(sx0 + 1, sx1), y + textRenderer.fontHeight, ChatTextSelection.selectionBg());
+        }
+
+        renderLineWithClicks(g, line, x, y, color, fallback, selRange);
+    }
+
+    private static String orderedTextPlain(OrderedText line) {
+        StringBuilder sb = new StringBuilder();
+        line.accept((i, st, cp) -> { sb.appendCodePoint(cp); return true; });
+        return sb.toString();
+    }
+
+    private void renderLineWithClicks(DrawContext g, OrderedText line, int x, int y, int color, Style fallback, int[] selRange) {
         final List<Style> styles = new ArrayList<>();
         line.accept((i, st, cp) -> { styles.add(st); return true; });
 
@@ -2181,11 +2436,103 @@ public class ChatBubbleScreen extends ChatScreen {
         int[] idx = {0};
         OrderedText decorated = sink -> line.accept((i, st, cp) -> {
             int pos = Math.min(idx[0]++, styleLen);
-            boolean underline = pos < styleLen ? hasClickEvent[pos] : st.getClickEvent() != null;
-            return sink.accept(i, underline && !st.isUnderlined() ? st.withUnderline(true) : st, cp);
+            Style st2 = st;
+            // Selected glyphs are repainted white (selection bg is dark).
+            if (selRange != null && pos >= selRange[0] && pos < selRange[1]) {
+                st2 = st.withColor(TextColor.fromRgb(ChatTextSelection.selectionFg()));
+            }
+            boolean underline = pos < styleLen ? hasClickEvent[pos] : st2.getClickEvent() != null;
+            return sink.accept(i, underline && !st2.isUnderlined() ? st2.withUnderline(true) : st2, cp);
         });
         g.drawText(textRenderer, decorated, x, y, color, false);
 
+    }
+
+    /** Draws one line as selectable text (name / quote rows that are not routed
+     * through renderLineWithClicks) and paints its selection background. */
+    private void drawSelectableText(DrawContext g, OrderedText line, int x, int y, int color,
+                                    int messageIndex, int lineIndex, int kind, float scale) {
+        TextSpan span = new TextSpan(messageIndex, lineIndex, kind, x, y, textRenderer.getWidth(line),
+            textRenderer.fontHeight, orderedTextPlain(line), scale, line);
+        if (messageIndex >= 0) textSpans.add(span);
+
+        OrderedText draw = line;
+        if (messageIndex >= 0 && textSelection.hasSelection()) {
+            int[] r = textSelection.rangeFor(span);
+            if (r != null) {
+                int sx0 = x + prefixWidth(line, r[0]);
+                int sx1 = x + prefixWidth(line, r[1]);
+                g.fill(sx0, y, Math.max(sx0 + 1, sx1), y + textRenderer.fontHeight, ChatTextSelection.selectionBg());
+                int fs = r[0];
+                int fe = r[1];
+                int[] idx = {0};
+                draw = sink -> line.accept((i, st, cp) -> {
+                    int pos = idx[0]++;
+                    return sink.accept(i, pos >= fs && pos < fe
+                        ? st.withColor(TextColor.fromRgb(ChatTextSelection.selectionFg())) : st, cp);
+                });
+            }
+        }
+
+        g.drawText(textRenderer, draw, x, y, color, false);
+    }
+
+    private TextSpan findTextSpanAt(double mouseX, double mouseY) {
+        for (int i = textSpans.size() - 1; i >= 0; i--) {
+            TextSpan s = textSpans.get(i);
+            if (mouseX >= s.x() && mouseX <= s.x() + s.w() && mouseY >= s.y() && mouseY <= s.y() + s.h()) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    private TextSpan findNearestTextSpan(double mouseX, double mouseY) {
+        TextSpan best = null;
+        double bestDist = Double.MAX_VALUE;
+        for (TextSpan s : textSpans) {
+            double cx = Math.max((double) s.x(), Math.min(mouseX, (double) (s.x() + s.w())));
+            double cy = Math.max((double) s.y(), Math.min(mouseY, (double) (s.y() + s.h())));
+            double dx = mouseX - cx;
+            double dy = mouseY - cy;
+            double dist = dx * dx + dy * dy;
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = s;
+            }
+        }
+        return best;
+    }
+
+    /** Code-point index inside the span that the given screen x falls on. */
+    private int charAt(TextSpan span, double mouseX) {
+        String text = span.text();
+        if (text.isEmpty()) return 0;
+        double localX = (mouseX - span.x()) / span.scale();
+        if (span.visualLine() instanceof OrderedText ot) {
+            int lo = 0;
+            int hi = text.codePointCount(0, text.length());
+            while (lo < hi) {
+                int mid = (lo + hi + 1) >>> 1;
+                if (prefixWidth(ot, mid) <= localX) lo = mid;
+                else hi = mid - 1;
+            }
+            return lo;
+        }
+        return text.codePointCount(0, text.length());
+    }
+
+    /** Auto-scrolls while dragging past the top/bottom edge of the message area. */
+    private void autoScrollSelection(double mouseY) {
+        if (mouseY < msgTop + 16 && scrollOffset > 0) {
+            scrollOffset = Math.max(0, scrollOffset - 4);
+            textSelection.markMoved();
+            scrollToBottom = false;
+        } else if (mouseY > msgBottom - 16 && scrollOffset < maxScroll) {
+            scrollOffset = Math.min(maxScroll, scrollOffset + 4);
+            textSelection.markMoved();
+            scrollToBottom = false;
+        }
     }
 
     private int prefixWidth(OrderedText line, int count) {
@@ -2248,26 +2595,33 @@ public class ChatBubbleScreen extends ChatScreen {
         int menuY = contextY - menuH;
         if (menuY < msgTop) menuY = contextY + 4;
         float alpha = getAnimProgress();
+        int a255 = (int) (255 * alpha);
 
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.CONTEXT_MENU_BG), menuX, menuY, CTX_W, menuH, alpha);
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), menuX, menuY, CTX_W, 1, alpha);
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), menuX, menuY + menuH - 1, CTX_W, 1, alpha);
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), menuX, menuY, 1, menuH, alpha);
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), menuX + CTX_W - 1, menuY, 1, menuH, alpha);
+        // 圆角化（1.21.11 restyle）：与设置菜 ?表情/快捷聊天面板同一套调用方
+// （RoundRectRenderer.panel 外框 9f + 内缩 1px  ?5f 行高亮），矩 ?位置/尺寸/条目均不变
+// 配色取纹 ?CONTEXT_MENU_BG/CONTEXT_HOVER/SIDEBAR_SELECTED 烘焙所用的基础调色
+// （theme().colors()），不取含强调色混合 ?c()，避免菜单底 ?高亮被染色
+        ChatBubbleTheme.Colors base = theme().colors();
+        RoundRectRenderer.panel(g, menuX, menuY, CTX_W, menuH, CTX_RADIUS,
+            // 保留各色自身 ?alpha（contextBg 烘焙 ?0xEE = 93% 半透明），只按开合动画缩放，
+            // 否则菜单底色会从不透明变成半透明以外的观感差异
+        ChatBubbleTheme.alphaBlend(base.contextBg(), (int) (a255 * ((base.contextBg() >>> 24) & 0xFF) / 255f)),
+            ChatBubbleTheme.alphaBlend(base.divider(), (int) (a255 * ((base.divider() >>> 24) & 0xFF) / 255f)));
 
-        boolean hoverCopy = mouseX >= menuX && mouseX <= menuX + CTX_W
+        // 只有悬停的行才有圆角高亮（非悬停 ?alpha=0 即不画）：整个二级菜单是一个圆角面板，
+        // 而不是每行各画一个圆角药 ?— ?与设置二级菜单（ChatSettingsMenu）的观感一致
+boolean hoverCopy = mouseX >= menuX && mouseX <= menuX + CTX_W
             && mouseY >= menuY && mouseY <= menuY + CTX_ITEM_H;
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(hoverCopy ? UiElement.CONTEXT_HOVER : UiElement.SIDEBAR_SELECTED),
-            menuX + 1, menuY + 1, CTX_W - 2, CTX_ITEM_H - 1, alpha);
+        RoundRectRenderer.fill(g, menuX + 1, menuY + 1, menuX + CTX_W - 1, menuY + CTX_ITEM_H, CTX_ITEM_RADIUS,
+            ChatBubbleTheme.alphaBlend(base.contextHover(), hoverCopy ? a255 : 0));
         drawTextureIconAlpha(g, iconTex("copy"), menuX + 5, menuY + 3, 12, alpha);
         g.drawText(textRenderer, Text.translatable("e33chat.context.copy").getString(), menuX + 22, menuY + 4, c().textPrimary(), false);
 
-        g.fill(menuX + 4, menuY + CTX_ITEM_H, menuX + CTX_W - 4, menuY + CTX_ITEM_H + 1, c().closeHoverBg());
-
         boolean hoverQuote = mouseX >= menuX && mouseX <= menuX + CTX_W
             && mouseY >= menuY + CTX_ITEM_H + 1 && mouseY <= menuY + menuH;
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(hoverQuote ? UiElement.CONTEXT_HOVER : UiElement.SIDEBAR_SELECTED),
-            menuX + 1, menuY + CTX_ITEM_H + 1, CTX_W - 2, CTX_ITEM_H, alpha);
+        RoundRectRenderer.fill(g, menuX + 1, menuY + CTX_ITEM_H + 1, menuX + CTX_W - 1, menuY + CTX_ITEM_H * 2 + 1,
+            CTX_ITEM_RADIUS,
+            ChatBubbleTheme.alphaBlend(base.contextHover(), hoverQuote ? a255 : 0));
         drawTextureIconAlpha(g, iconTex("quote"), menuX + 5, menuY + CTX_ITEM_H + 3, 12, alpha);
         g.drawText(textRenderer, Text.translatable("e33chat.context.quote").getString(), menuX + 22, menuY + CTX_ITEM_H + 5, c().textPrimary(), false);
     }
@@ -2279,35 +2633,36 @@ public class ChatBubbleScreen extends ChatScreen {
         int menuY = contextAvatarY - menuH;
         if (menuY < msgTop) menuY = contextAvatarY + 4;
         float alpha = getAnimProgress();
+        int a255 = (int) (255 * alpha);
 
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.CONTEXT_MENU_BG), menuX, menuY, CTX_W, menuH, alpha);
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), menuX, menuY, CTX_W, 1, alpha);
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), menuX, menuY + menuH - 1, CTX_W, 1, alpha);
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), menuX, menuY, 1, menuH, alpha);
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), menuX + CTX_W - 1, menuY, 1, menuH, alpha);
+        // 与消息右键菜单同一套圆角（RoundRectRenderer.panel 9f + 内缩 1px  ?5f 行高亮）
+        ChatBubbleTheme.Colors base = theme().colors();
+        RoundRectRenderer.panel(g, menuX, menuY, CTX_W, menuH, CTX_RADIUS,
+            // 保留各色自身 ?alpha（contextBg 烘焙 ?0xEE = 93% 半透明），只按开合动画缩放，
+            // 否则菜单底色会从不透明变成半透明以外的观感差异
+        ChatBubbleTheme.alphaBlend(base.contextBg(), (int) (a255 * ((base.contextBg() >>> 24) & 0xFF) / 255f)),
+            ChatBubbleTheme.alphaBlend(base.divider(), (int) (a255 * ((base.divider() >>> 24) & 0xFF) / 255f)));
 
         boolean hoverTp = mouseX >= menuX && mouseX <= menuX + CTX_W
             && mouseY >= menuY && mouseY <= menuY + CTX_ITEM_H;
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(hoverTp ? UiElement.CONTEXT_HOVER : UiElement.SIDEBAR_SELECTED),
-            menuX + 1, menuY + 1, CTX_W - 2, CTX_ITEM_H - 1, alpha);
+        RoundRectRenderer.fill(g, menuX + 1, menuY + 1, menuX + CTX_W - 1, menuY + CTX_ITEM_H, CTX_ITEM_RADIUS,
+            ChatBubbleTheme.alphaBlend(base.contextHover(), hoverTp ? a255 : 0));
         drawTextureIconAlpha(g, iconTex("tp"), menuX + 5, menuY + 3, 12, alpha);
         g.drawText(textRenderer, Text.translatable(ChatMessageStore.useTpa() ? "e33chat.context.tpa" : "e33chat.context.tp").getString(), menuX + 22, menuY + 4, c().textPrimary(), false);
 
-        g.fill(menuX + 4, menuY + CTX_ITEM_H + 1, menuX + CTX_W - 4, menuY + CTX_ITEM_H + 2, c().closeHoverBg());
-
         boolean hoverWhisper = mouseX >= menuX && mouseX <= menuX + CTX_W
             && mouseY >= menuY + CTX_ITEM_H + 2 && mouseY <= menuY + CTX_ITEM_H * 2 + 2;
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(hoverWhisper ? UiElement.CONTEXT_HOVER : UiElement.SIDEBAR_SELECTED),
-            menuX + 1, menuY + CTX_ITEM_H + 2, CTX_W - 2, CTX_ITEM_H, alpha);
+        RoundRectRenderer.fill(g, menuX + 1, menuY + CTX_ITEM_H + 2, menuX + CTX_W - 1, menuY + CTX_ITEM_H * 2 + 2,
+            CTX_ITEM_RADIUS,
+            ChatBubbleTheme.alphaBlend(base.contextHover(), hoverWhisper ? a255 : 0));
         drawTextureIconAlpha(g, iconTex("whisper"), menuX + 5, menuY + CTX_ITEM_H + 4, 12, alpha);
         g.drawText(textRenderer, Text.translatable("e33chat.context.whisper").getString(), menuX + 22, menuY + CTX_ITEM_H + 6, c().textPrimary(), false);
 
-        g.fill(menuX + 4, menuY + CTX_ITEM_H * 2 + 3, menuX + CTX_W - 4, menuY + CTX_ITEM_H * 2 + 4, c().closeHoverBg());
-
         boolean hoverBlock = mouseX >= menuX && mouseX <= menuX + CTX_W
             && mouseY >= menuY + CTX_ITEM_H * 2 + 4 && mouseY <= menuY + menuH;
-        ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(hoverBlock ? UiElement.CONTEXT_HOVER : UiElement.SIDEBAR_SELECTED),
-            menuX + 1, menuY + CTX_ITEM_H * 2 + 4, CTX_W - 2, CTX_ITEM_H, alpha);
+        RoundRectRenderer.fill(g, menuX + 1, menuY + CTX_ITEM_H * 2 + 4, menuX + CTX_W - 1,
+            menuY + CTX_ITEM_H * 3 + 4, CTX_ITEM_RADIUS,
+            ChatBubbleTheme.alphaBlend(base.contextHover(), hoverBlock ? a255 : 0));
         drawTextureIconAlpha(g, iconTex("block"), menuX + 5, menuY + CTX_ITEM_H * 2 + 6, 12, alpha);
         ChatMessageStore.ChatMessage avaMsg = ChatMessageStore.getMessageAt(contextAvatarIndex);
         boolean isBlocked = avaMsg != null
@@ -2417,8 +2772,8 @@ public class ChatBubbleScreen extends ChatScreen {
         int tx = UiLayout.centerX(panelX, panelW, tw);
         int ty = msgBottom - 24;
         // Background fades with the text, at half opacity like the strong-hint bar
-        // TOAST_BG 烘焙不透明 toastBg；纹理 × 动态 alpha = 半透明淡入淡出。2.2.4 黑块根因：
-        // 当时 blit 无 alpha 通道渲染不透明纯黑 → drawWithAlpha 后纹理可覆盖 + 透明度可控
+        // TOAST_BG 烘焙不透明 toastBg；纹理 × 动画 alpha = 半透明淡入淡出（2.2.4 黑块根因：
+        // 当时 blit 的 alpha 通道渲染不透明纯黑，改 drawWithAlpha 后纹理可覆盖 + 透明度可控
         ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.TOAST_BG),
             tx - 6, ty - 2, tw + 12, textRenderer.fontHeight + 4, (alpha / 2) / 255f);
         g.drawText(textRenderer, text, tx, ty, color, false);
@@ -2484,7 +2839,7 @@ public class ChatBubbleScreen extends ChatScreen {
     private void renderBottomBar(DrawContext g, int mouseX, int mouseY, float panelAlpha) {
         int a255 = (int) (255 * panelAlpha);
         int barBg = ChatBubbleTheme.alphaBlend(c().barBg(), a255);
-        // 1.21.11 restyle: rounded floating card instead of the flat textured strip (图3 style).
+        // 1.21.11 restyle: rounded floating card instead of the flat textured strip ( ? style).
         RoundRectRenderer.fill(g, panelX, barTop, panelX + panelW, height, 9f, barBg);
         ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.DIVIDER), panelX, barTop, panelW, 1, panelAlpha);
 
@@ -2521,7 +2876,7 @@ public class ChatBubbleScreen extends ChatScreen {
         drawIconButton(g, iconTex("send"), sendX, iconY, ICON_S - 1, getAnimProgress(), hoverSend);
     }
 
-    /** Each bottom-bar icon sits in its own rounded button with a thin border ring (图3 style). */
+    /** Each bottom-bar icon sits in its own rounded button with a thin border ring ( ? style). */
     private void drawIconButton(DrawContext g, Identifier tex, int x, int y, int size, float alpha, boolean hover) {
         int a255 = (int) (255 * alpha);
         int pad = 1;
@@ -2544,7 +2899,7 @@ public class ChatBubbleScreen extends ChatScreen {
         drawTextureIconAlpha(g, tex, x, y, size, 1f);
     }
 
-    /** 带透明度图标的绘制：与 drawTextureIcon 同采样语义，但走带 alpha 的渲染路径（弹层淡入用）。 */
+    /** 带透明度图标的绘制：与 drawTextureIcon 同采样语义，但走 ?alpha 的渲染路径（弹层淡入用） ?*/
     public static void drawTextureIconAlpha(DrawContext g, Identifier tex, int x, int y, int size, float alpha) {
         if (alpha <= 0.003f) return;
         if (size < 16) {
@@ -2564,6 +2919,220 @@ public class ChatBubbleScreen extends ChatScreen {
 
 
 
+
+    /** 左键是否按在引用块上（引用文字之外的内边距也算）；命中则记为待派发的引用点击 ?*/
+    private boolean beginQuotePress(double mouseX, double mouseY) {
+        int owner = quoteOwnerAt(mouseX, mouseY);
+        quoteJumpLog(() -> "[e33chat] QUOTEJUMP | PRESSPROBE | local=(" + mouseX + "," + mouseY
+            + ") owner=" + owner + " rects=" + quoteRects.size() + " msgArea=[" + msgTop + "," + msgBottom + "]"
+            + (owner >= 0 ? " rect=" + java.util.Arrays.toString(quoteRects.get(quoteOwnerRectIndex)) : ""));
+        if (owner < 0) return false;
+        quotePressX = mouseX;
+        quotePressY = mouseY;
+        return true;
+    }
+
+    /** 命中引用块时返回「持有该引用的消息」下标（全量列表下标，与 bubbleRects 同一套），否 ?-1 ?*/
+    private int quoteOwnerAt(double mouseX, double mouseY) {
+        quoteOwnerRectIndex = -1;
+        if (mouseY < msgTop || mouseY > msgBottom) return -1;
+        for (int i = quoteRects.size() - 1; i >= 0; i--) {
+            int[] r = quoteRects.get(i);
+            if (mouseX >= r[0] && mouseX <= r[0] + r[2] && mouseY >= r[1] && mouseY <= r[1] + r[3]) {
+                quoteOwnerRectIndex = i;
+                return r[4];
+            }
+        }
+        return -1;
+    }
+
+    /** 双击引用块：滚动到被引用的原消息并短暂高亮；原消息已不在列表时静默无操作（只吞掉这次双击）。
+     *  单击不会走到这里（单击保持选字/无操作），所以这里每触发一次只跳一次。 */
+    private boolean handleQuoteClick(double mouseX, double mouseY) {
+        int owner = quoteOwnerAt(mouseX, mouseY);
+        quoteJumpLog(() -> "[e33chat] QUOTEJUMP | CLICK | local=(" + mouseX + "," + mouseY
+            + ") owner=" + owner + " rects=" + quoteRects.size()
+            + (quoteOwnerRectIndex >= 0 ? " rect=" + java.util.Arrays.toString(quoteRects.get(quoteOwnerRectIndex)) : ""));
+        if (owner < 0) return false;
+        int target = resolveQuoteTarget(owner);
+        if (target >= 0) {
+            int before = scrollOffset;
+            jumpToMessage(target);
+            // 抑制「自动滚到底」和仍在跑的滚动动画：下一 ?renderMessages 会读这两个开关，
+            // 不关掉的话刚跳到的位置会被立刻拉回底 ?/ 被动画值覆盖
+            scrollToBottom = false;
+            scrollAnimActive = false;
+            lastScrollTime = Util.getMeasuringTimeMs();
+            quoteFlashMsg = ChatMessageStore.getMessages().get(target);
+            quoteFlashStart = Util.getMeasuringTimeMs();
+            final int after = scrollOffset;
+            final int tgt = target;
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | JUMP-EXEC | target=" + tgt
+                + " scrollOffset " + before + " -> " + after + " maxScroll=" + maxScroll
+                + " msgTotalH=" + messageTotalH + " scrollToBottom=" + scrollToBottom
+                + " flash=" + (quoteFlashMsg != null));
+            quoteJumpFrameLogs = 3;
+        } else {
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | ABORT | owner=" + owner
+                + " reason=no target (map miss + content miss)");
+        }
+        return true;
+    }
+
+    /** 兜底的内容匹配：精确表查不到时，在当前显示的列表里从该消息往前找「发送者 + 内容」都吻合的一条。
+     *  内容重复时取「离引用消息最近」的那条（更可能是本人引用的目标）；找不到（已被历史清理 /
+     *  不在当前视图）返回 -1，由调用方静默处理。日志统一带 src=content 以便和精确表区分。 */
+    private int findQuotedMessage(int ownerIndex) {
+        List<ChatMessageStore.ChatMessage> full = ChatMessageStore.getMessages();
+        if (ownerIndex < 0 || ownerIndex >= full.size()) {
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | ownerIndex out of range | owner=" + ownerIndex
+                + " full=" + full.size());
+            return -1;
+        }
+        ChatMessageStore.ChatMessage owner = full.get(ownerIndex);
+        String quoted = owner.replyContent();
+        if (quoted == null || quoted.isEmpty()) {
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | replyContent EMPTY | owner=" + ownerIndex);
+            return -1;
+        }
+        List<ChatMessageStore.ChatMessage> shown = whisperPartner != null
+            ? ChatMessageStore.getWhisperMessages(whisperPartner)
+            : ChatMessageStore.getPublicMessages();
+        int scanned = 0;
+        int cmpLogged = 0;
+        StringBuilder nearMiss = new StringBuilder();
+        // 先定位 owner 在「显示列表」里的位置，再只往前扫 —— owner 往往就是最新一条，
+        // 若从末尾开始扫会在第一轮就撞到它自己并 break（这正是 scanned=0、永不命中的根因）。
+        int ownerShown = -1;
+        for (int i = shown.size() - 1; i >= 0; i--) {
+            if (shown.get(i) == owner) { ownerShown = i; break; }
+        }
+        if (ownerShown < 0) {
+            quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | owner not in shown list | owner=" + ownerIndex
+                + " shown=" + shown.size());
+            return -1;
+        }
+        // 从「离引用消息最近」的那条往前扫：内容完全相同的多条里，离得最近的最可能就是
+        // 用户当初引用的那一条（精确表命中时根本不会走到这里，所以这仅是兜底猜测）。
+        for (int i = ownerShown - 1; i >= 0; i--) {
+            ChatMessageStore.ChatMessage m = shown.get(i);
+            if (m.isSystem()) continue;
+            scanned++;
+            String cand = ChatMessageStore.singleLine(m.content().getString());
+            if (!cand.equals(quoted)) {
+                // 记录「发送者一致但文本不等」的最近几条：这是 B  ?bug 的直接证
+if (cmpLogged < 3 && quoteSenderMatches(m, owner.replySender())) {
+                    cmpLogged++;
+                    nearMiss.append("\n  [SM] quoted='").append(quoted).append("' vs cand='").append(cand).append('\'');
+                }
+                continue;
+            }
+            if (!quoteSenderMatches(m, owner.replySender())) continue;
+            // 命中必须落在全量下标空间里（jumpToMessage / 气泡绘制都用它）
+            for (int f = ownerIndex - 1; f >= 0; f--) {
+                if (full.get(f) == m) {
+                    final int hit = f;
+                    final int sc2 = scanned;
+                    quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | src=content owner=" + ownerIndex
+                        + " replySender='" + owner.replySender() + "' replyContent='" + quoted + "'"
+                        + " shown=" + shown.size() + " scanned=" + sc2 + " result=" + hit);
+                    return f;
+                }
+            }
+        }
+        final int sc = scanned;
+        final String nm = nearMiss.toString();
+        quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | src=content owner=" + ownerIndex
+            + " replySender='" + owner.replySender() + "' replyContent='" + quoted + "'"
+            + " shown=" + shown.size() + " scanned=" + sc + " result=-1" + nm);
+        return -1;
+    }
+
+    /** 引用块里的发送者名与候选消息是否同一人（优先原始玩家名，其次显示名，可能带前缀/后缀） ?*/
+    private static boolean quoteSenderMatches(ChatMessageStore.ChatMessage m, String replySender) {
+        if (replySender == null || replySender.isEmpty()) return true;
+        String raw = m.rawPlayerName();
+        if (raw != null && raw.equals(replySender)) return true;
+        String name = m.senderName().getString();
+        return name.equals(replySender) || (!name.isEmpty() && name.contains(replySender));
+    }
+
+    /** 记住「刚发出的这条自己消息引用了谁」：offset = 自己的下标 - 目标下标。
+     *  同时写身份键与指纹别名，表容量固定（FIFO 淘汰），不会随聊天无限增长。 */
+    private void rememberQuoteTarget(ChatMessageStore.ChatMessage sent, int selfIndex, int targetIndex) {
+        if (sent == null || selfIndex < 0 || targetIndex < 0 || selfIndex <= targetIndex) return;
+        int offset = selfIndex - targetIndex;
+        String fp = quoteFingerprint(sent);
+        quoteTargetByMessage.put(sent, offset);
+        quoteTargetByFingerprint.put(fp, offset);
+        quoteTargetOrder.addLast(sent);
+        while (quoteTargetOrder.size() > QUOTE_TARGET_MAX) {
+            ChatMessageStore.ChatMessage old = quoteTargetOrder.pollFirst();
+            if (old == null) continue;
+            quoteTargetByMessage.remove(old);
+            quoteTargetByFingerprint.remove(quoteFingerprint(old));
+        }
+    }
+
+    /** 身份之外的稳定别名：内容哈希 + 发送毫秒（withSenderName / withReply 换实例时不变；
+     *  withMerge 只发生在同内容连发，会改 time，那种情况退回内容匹配）。 */
+    private static String quoteFingerprint(ChatMessageStore.ChatMessage m) {
+        return m == null ? "" : m.messageHash() + "@" + m.time();
+    }
+
+    /** 按对象身份取全量下标（不能用 List.indexOf：ChatMessage 是 record，equals 是值相等）。 */
+    private static int indexOfIdentity(List<ChatMessageStore.ChatMessage> list, ChatMessageStore.ChatMessage msg) {
+        if (list == null || msg == null) return -1;
+        for (int i = list.size() - 1; i >= 0; i--) {
+            if (list.get(i) == msg) return i;
+        }
+        return -1;
+    }
+
+    /** 引用块指向哪条：先查发送时记下的精确关系（src=map），查不到再退回内容匹配（src=content）。
+     *  精确表两条通道：对象身份（同实例）+ 指纹（实例被 withSenderName 换掉后仍能接上）。
+     *  命中后不删键（同一引用块重复双击仍精确），靠 QUOTE_TARGET_MAX 的 FIFO 上限回收。
+     *  全程不抛异常：对象被替换 / 下标越界 / 表里没有，都只是走兜底。 */
+    private int resolveQuoteTarget(int ownerIndex) {
+        List<ChatMessageStore.ChatMessage> full = ChatMessageStore.getMessages();
+        if (ownerIndex >= 0 && ownerIndex < full.size()) {
+            ChatMessageStore.ChatMessage owner = full.get(ownerIndex);
+            Integer offset = quoteTargetByMessage.get(owner);
+            String key = "id";
+            if (offset == null) {
+                offset = quoteTargetByFingerprint.get(quoteFingerprint(owner));
+                key = "fp";
+            }
+            if (offset != null) {
+                final int off = offset;
+                final String srcKey = key;
+                int target = ownerIndex - off;
+                if (off > 0 && target >= 0 && target < ownerIndex) {
+                    final int dbgTarget = target;
+                    quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | src=map key=" + srcKey
+                        + " owner=" + ownerIndex + " offset=" + off + " target=" + dbgTarget
+                        + " full=" + full.size());
+                    return target;
+                }
+                final int staleTarget = target;
+                quoteJumpLog(() -> "[e33chat] QUOTEJUMP | FIND | src=map key=" + srcKey + " STALE owner="
+                    + ownerIndex + " offset=" + off + " target=" + staleTarget + " -> fallback content");
+            }
+        }
+        return findQuotedMessage(ownerIndex);
+    }
+
+    /** 引用跳转后的一次性高亮：目标消息整条盖一层圆角底色，随时间线性淡出后自然消失 ?*/
+    private void renderQuoteFlash(DrawContext g, ChatMessageStore.ChatMessage msg, int screenY, int msgH) {
+        if (quoteFlashMsg == null || msg != quoteFlashMsg) return;
+        float t = MathHelper.clamp((float) (Util.getMeasuringTimeMs() - quoteFlashStart) / QUOTE_FLASH_MS, 0f, 1f);
+        int a = (int) (0x66 * (1f - t));
+        if (t >= 1f || a <= 0) { quoteFlashMsg = null; return; }   // 淡出结束：自动消失，无需用户操作
+        // 颜色取主题里现成的“选中条目底色”（sidebarItemSelected），圆角沿用气泡圆角
+        RoundRectRenderer.fill(g, panelX + PAD - 2, screenY - 2, panelX + panelW - PAD + 2, screenY + msgH + 2,
+            ChatBubbleClientSetup.config().bubbleCornerRadius(),
+            ChatBubbleTheme.alphaBlend(c().sidebarItemSelected(), a));
+    }
 
     private void jumpToMessage(int msgIndex) {
         var msgs = ChatMessageStore.getMessages();
@@ -2650,7 +3219,7 @@ public class ChatBubbleScreen extends ChatScreen {
         int end = cicode.indexOf("]]", start);
         if (end < 0) end = cicode.length();
         String path = cicode.substring(start, end);
-        // file:///C:\... → C:\... (drop the leading slash before the drive letter)
+        // file:///C:\...  ?C:\... (drop the leading slash before the drive letter)
         if (path.startsWith("/") && path.length() > 1 && path.charAt(1) == ':') return path.substring(1);
         return path;
     }
@@ -2661,13 +3230,13 @@ public class ChatBubbleScreen extends ChatScreen {
         if (raw.contains("[[CICode,url=file://")) {
             // A local file:// CICode (chatimage's drag/paste handler inserts
             // these) is a local-only broken link. Queue our own upload and
-            // finish the send automatically once the real URL is up — one
+            // finish the send automatically once the real URL is up  ?one
             // enter, no second press. The input is cleared so the enter can't
             // double-fire; the text is restored if the upload fails.
             //
             // Strict validity check: only a real, existing local file is an
             // upload candidate. Edited remnants (deleted brackets, stale paths)
-            // fall through and are sent as plain text — never block the user
+            // fall through and are sent as plain text  ?never block the user
             // on a string prefix alone.
             String localPath = extractLocalPath(raw);
             if (localPath == null || !new java.io.File(localPath).isFile()) {
@@ -2708,11 +3277,15 @@ public class ChatBubbleScreen extends ChatScreen {
         }
 
         boolean localBubble = !text.startsWith("/") || whisperTarget != null;
+        // 发送前先取走引用目标：下面会把 replyTargetIndex 置 -1，之后就不知道引用了谁
+        final int quoteTarget = replyTargetIndex;
+        boolean quoteTargetValid = false;
 
         if (replyTargetIndex >= 0) {
             if (localBubble) {
                 ChatMessageStore.ChatMessage target = ChatMessageStore.getMessageAt(replyTargetIndex);
                 if (target != null) {
+                    quoteTargetValid = true;
                     String quoteSender = (target.rawPlayerName() != null && !target.rawPlayerName().isEmpty())
                         ? target.rawPlayerName() : target.senderName().getString();
                     String quoted = ChatMessageStore.singleLine(target.content().getString());
@@ -2737,7 +3310,7 @@ public class ChatBubbleScreen extends ChatScreen {
         if (text.startsWith("/"))
             // yarn: sendChatCommand is the full signed path (vanilla ChatScreen
             // uses it); sendCommand silently drops commands with signable
-            // arguments (/msg /tell /w) — regression from the 1.20 port
+            // arguments (/msg /tell /w)  ?regression from the 1.20 port
             client.player.networkHandler.sendChatCommand(text.substring(1));
         else
             client.player.networkHandler.sendChatMessage(text);
@@ -2756,12 +3329,22 @@ public class ChatBubbleScreen extends ChatScreen {
             String playerName = client.player.getName().getString();
             String replySender = ChatMessageStore.getPendingReplySender();
 
-            ChatMessageStore.addMessage(contentForSend,
+            ChatMessageStore.ChatMessage sentMsg = ChatMessageStore.addMessage(contentForSend,
                 client.player.getUuid(),
                 ChatMessageStore.ownDisplayName(),
                 false,
                 playerName,
                 whisperTarget != null, whisperTarget, true);
+            // 把「这条自己消息」与发送时记下的引用目标关联起来，点击引用块时直接查表，
+            // 不再靠内容和发送者去猜（内容重复时从最早/最近匹配都会跳错）。
+            if (quoteTargetValid && quoteTarget >= 0 && sentMsg != null) {
+                int selfIndex = indexOfIdentity(ChatMessageStore.getMessages(), sentMsg);
+                if (selfIndex > quoteTarget) {
+                    rememberQuoteTarget(sentMsg, selfIndex, quoteTarget);
+                    quoteJumpLog(() -> "[e33chat] QUOTEJUMP | MAP-PUT | self=" + selfIndex
+                        + " target=" + quoteTarget + " offset=" + (selfIndex - quoteTarget));
+                }
+            }
             ChatMessageStore.incrementPendingEcho(text);
 
             // Trigger mention detection directly from send path.
@@ -2784,12 +3367,12 @@ public class ChatBubbleScreen extends ChatScreen {
         savedInput = "";
         scrollToBottom = true;
         // Optional vanilla-style behaviour: close the chat screen right after the
-        // message goes out (off by default — this screen supports multi-send).
+        // message goes out (off by default  ?this screen supports multi-send).
         if (cfg != null && cfg.closeChatOnSend()) onClose();
     }
 
 
-    // 父类 setChatFromHistory 访问 package-private chatInputSuggestor（跨包 null），
+    // 父类 setChatFromHistory 访问 package-private chatInputSuggestor（跨 ?null），
     // override 用自己的实现（history 字段也私有化到本类）
     @Override
     public void setChatFromHistory(int offset) {
@@ -2807,8 +3390,7 @@ public class ChatBubbleScreen extends ChatScreen {
         }
     }
 
-    // 父类 resize 访问 package-private chatInputSuggestor（跨包 null）→ 自实现
-    @Override
+    // 父类 resize 访问 package-private chatInputSuggestor（跨 ?null）→ 自实  @Override
     public void resize(int width, int height) {
         String cur = chatField.getText();
         this.width = width;

@@ -28,6 +28,7 @@
   "e33chat.config.custom_accent.desc": "输入 #RRGGBB 覆盖强调色（留空用预设）",
   "e33chat.config.custom_panel_bg": "自定义面板底色 (HEX)",
   "e33chat.config.custom_panel_bg.desc": "输入 #RRGGBB 覆盖面板背景色（留空用主题默认）",
+  "e33chat.channels.auto_enabled": "检测到服务器也安装了 E33Chat：已自动开启服务器联动功能，重连服务器后生效。",
   "e33chat.config.enabled": "启用模组",
   "e33chat.config.enabled.desc": "开启或关闭自定义聊天界面",
   "e33chat.config.red_dot": "红点提示",

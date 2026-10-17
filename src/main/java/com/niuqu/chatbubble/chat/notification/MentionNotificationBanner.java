@@ -5,6 +5,7 @@ import com.niuqu.chatbubble.render.Animation;
 import com.niuqu.chatbubble.render.AnimationStyle;
 import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
+import com.niuqu.chatbubble.compat.JadeCompat;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.render.RoundRectRenderer;
 import com.niuqu.chatbubble.render.UiTokens;
@@ -40,18 +41,22 @@ public class MentionNotificationBanner {
     private static final int SHADOW_OFF = UiTokens.SHADOW_OFFSET_PANEL;
     private static final float COMPACT_SCALE = 0.75f;
     private static final int STACK_GAP = 4;
+    /** Jade 描述框与横幅之间的最小间距（px）。 */
+    private static final int JADE_GAP = 6;
+    /** 避让下压的平滑时间常数（ms），避免描述框闪出闪没时横幅抖动。 */
+    private static final double JADE_SHIFT_TAU_MS = 90.0;
     private static final UUID NIL_UUID = new UUID(0, 0);
 
     /** Newest first. */
     private final List<ActiveBanner> banners = new ArrayList<>();
     private final List<ExitingBanner> exiting = new ArrayList<>();
 
-    private static final Map<UUID, Identifier> skinCache = new LinkedHashMap<>(16, 0.75f, true) {
-        @Override
-        protected boolean removeEldestEntry(Map.Entry<UUID, Identifier> eldest) {
-            return size() > 256;
-        }
-    };
+    /** Jade 描述框避让的当前下压量（平滑过渡）与其上次采样时间。 */
+    private float jadeShift;
+    private long jadeShiftLastMs;
+    /** Last logged stack sizes, so the debug line only fires on change. */
+    private int lastLoggedVisible = -1;
+    private int lastLoggedExiting = -1;
 
     private MentionNotificationBanner() {}
 
@@ -116,6 +121,7 @@ public class MentionNotificationBanner {
 
     public void tick() {
         long now = System.currentTimeMillis();
+        updateJadeShift(now);
 
         // Natural expiry: snapshot every current position, remove expired banners,
         // then let the remaining ones push up to fill the gaps.
@@ -143,8 +149,18 @@ public class MentionNotificationBanner {
         exiting.removeIf(e -> now - e.startMs >= EXIT_MS);
 
         if (!banners.isEmpty() || !exiting.isEmpty()) {
-            ChatMessageStore.debugLog(() -> "[e33chat] Banner stack | visible=" + banners.size()
-                + " | exiting=" + exiting.size());
+            // Only log on change: this used to fire every frame while a banner was
+            // on screen, which flooded the log (and the log I/O sat on the render thread).
+            if (banners.size() != lastLoggedVisible || exiting.size() != lastLoggedExiting) {
+                lastLoggedVisible = banners.size();
+                lastLoggedExiting = exiting.size();
+                ChatMessageStore.debugLog(() -> "[e33chat] Banner stack | visible=" + banners.size()
+                    + " | exiting=" + exiting.size());
+            }
+        } else if (lastLoggedVisible != 0 || lastLoggedExiting != 0) {
+            lastLoggedVisible = 0;
+            lastLoggedExiting = 0;
+            ChatMessageStore.debugLog(() -> "[e33chat] Banner stack | visible=0 | exiting=0");
         }
     }
 
@@ -221,8 +237,50 @@ public class MentionNotificationBanner {
         return Math.max(1, Math.min(5, value));
     }
 
+    /**
+     * Jade(玉) 兼容：描述框显示且与本叠横幅在水平方向有重叠时，把横幅整体下压到描述框下方，
+     * 否则回到用户配置的顶部偏移。下压量做指数平滑，避免一边走一边看方块时横幅上下抖动。
+     */
+    private void updateJadeShift(long now) {
+        float target = 0f;
+        JadeCompat.Rect jade = JadeCompat.tooltipRect();
+        if (jade != null) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            int screenW = mc.getWindow().getScaledWidth();
+            int screenH = mc.getWindow().getScaledHeight();
+            float centerX = screenW / 2f + ChatBubbleClientSetup.config().bannerOffsetX();
+            float halfW = 0f;
+            for (ActiveBanner b : banners) halfW = Math.max(halfW, b.data.bannerW / 2f);
+            for (ExitingBanner e : exiting) halfW = Math.max(halfW, e.data.bannerW / 2f);
+            if (halfW <= 0f) halfW = 100f;
+            boolean overlapsX = jade.x() < centerX + halfW && jade.right() > centerX - halfW;
+            if (overlapsX) {
+                target = jade.bottom() + JADE_GAP - ChatBubbleClientSetup.config().bannerOffsetY();
+                // 描述框在屏幕下方时，下压也要保证横幅留在屏幕内
+                target = Math.max(0f, Math.min(target, screenH - 48f));
+            }
+        }
+
+        if (jadeShiftLastMs == 0L) {
+            jadeShift = target;
+            jadeShiftLastMs = now;
+            return;
+        }
+        float dt = Math.min(250f, Math.max(0f, now - jadeShiftLastMs));
+        jadeShiftLastMs = now;
+        if (dt <= 0f) return;
+        float k = 1f - (float) Math.exp(-dt / JADE_SHIFT_TAU_MS);
+        jadeShift += (target - jadeShift) * k;
+        if (Math.abs(target - jadeShift) < 0.5f) jadeShift = target;
+    }
+
+    /** 横幅叠顶部 Y：用户配置的顶部偏移 + Jade 避让下压量。 */
+    private float stackTopY() {
+        return ChatBubbleClientSetup.config().bannerOffsetY() + jadeShift;
+    }
+
     private float targetY(int index, ActiveBanner b) {
-        float y = ChatBubbleClientSetup.config().bannerOffsetY();
+        float y = stackTopY();
         for (int i = 0; i < index; i++) {
             ActiveBanner prev = banners.get(i);
             float prevScale = i == 0 ? 1f : COMPACT_SCALE;
@@ -237,7 +295,7 @@ public class MentionNotificationBanner {
 
     private float currentY(ActiveBanner b, long now) {
         int i = banners.indexOf(b);
-        if (i < 0) return ChatBubbleClientSetup.config().bannerOffsetY();
+        if (i < 0) return stackTopY();
         float target = targetY(i, b);
         if (b.pushStartMs >= 0) {
             float t = Math.min(1f, (float) (now - b.pushStartMs) / PUSH_MS);
@@ -252,7 +310,7 @@ public class MentionNotificationBanner {
                 if (bstyle == AnimationStyle.SLIDE) {
                     float c = 1.70158f;
                     float slide = 1f + c * (float) Math.pow(raw - 1, 3) + c * (float) Math.pow(raw - 1, 2);
-                    return (-b.data.bannerH) + slide * b.data.bannerH + ChatBubbleClientSetup.config().bannerOffsetY();
+                    return (-b.data.bannerH) + slide * b.data.bannerH + stackTopY();
                 }
             }
         }
@@ -375,23 +433,10 @@ public class MentionNotificationBanner {
         if (scale != 1f) g.getMatrices().popMatrix();
     }
 
+    // Delegates to SkinResolver: one shared, fully non-blocking implementation.
+    // Rendering must never wait on a skin HTTP request — see SkinResolver's docs.
     private Identifier getSkin(UUID uuid, String name) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.getNetworkHandler() != null && uuid != null && !uuid.equals(NIL_UUID)) {
-            var info = mc.getNetworkHandler().getPlayerListEntry(uuid);
-            if (info != null) return info.getSkinTextures().body().texturePath();
-        }
-        if (uuid != null && !uuid.equals(NIL_UUID)) {
-            Identifier cached = skinCache.get(uuid);
-            if (cached != null) return cached;
-            SkinTextures skin = mc.getSkinProvider().supplySkinTextures(
-                new GameProfile(uuid, name != null ? name : ""), false).get();
-            if (skin != null && skin.body() != null && skin.body().texturePath() != null) {
-                skinCache.put(uuid, skin.body().texturePath());
-                return skin.body().texturePath();
-            }
-        }
-        return DefaultSkinHelper.getSkinTextures(uuid != null ? uuid : NIL_UUID).body().texturePath();
+        return com.niuqu.chatbubble.render.SkinResolver.getSkin(uuid, name);
     }
 
     private void drawPlayerHead(DrawContext g, Identifier skin, int x, int y,

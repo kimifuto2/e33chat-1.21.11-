@@ -373,14 +373,16 @@ public class ChatMessageStore {
     public static java.util.function.Supplier<net.minecraft.entity.player.PlayerEntity> localPlayerSupplier =
         () -> net.minecraft.client.MinecraftClient.getInstance().player;
 
-    public static void addMessage(Text content, UUID senderUUID, Text senderName, boolean isSystem, String rawPlayerName, boolean whisper, String whisperPartner, boolean localSend) {
+    /** 结果返回「这条消息落库后的实例」（合并去重时是合并后的新实例），调用方可用它做对象
+     *  身份关联（例如引用跳转的精确目标）；被丢弃（空白内容）时返回 null。 */
+    public static ChatMessage addMessage(Text content, UUID senderUUID, Text senderName, boolean isSystem, String rawPlayerName, boolean whisper, String whisperPartner, boolean localSend) {
         String messageHash = String.valueOf(content.getString().hashCode());
 
         // A message that is only whitespace/control chars — e.g. a server chat-clear
         // made of nothing but newlines — is dropped so it produces no bubble/preview.
         // Real newlines are kept in the stored content so the chat list renders them as
         // line breaks; single-line contexts (preview/hint) flatten them separately.
-        if (content.getString().isBlank()) return;
+        if (content.getString().isBlank()) return null;
 
         var localPlayer = localPlayerSupplier.get();
         String playerName = localPlayer != null ? localPlayer.getName().getString() : "";
@@ -422,10 +424,11 @@ public class ChatMessageStore {
                 }
                 pendingReplyContent = null;
                 pendingReplySender = null;
-                messages.set(messages.size() - 1, last.withMerge(
+                ChatMessage merged = last.withMerge(
                     mergeReplyContent, mergeReplySender, System.currentTimeMillis(),
-                    last.duplicateCount() + 1));
-                return;
+                    last.duplicateCount() + 1);
+                messages.set(messages.size() - 1, merged);
+                return merged;
             }
         }
 
@@ -446,7 +449,7 @@ public class ChatMessageStore {
             replySender = pending.quoteSender();
         }
 
-        messages.add(new ChatMessage(
+        ChatMessage created = new ChatMessage(
             senderUUID,
             senderName != null ? senderName : Text.literal(""),
             content,
@@ -460,7 +463,8 @@ public class ChatMessageStore {
             rawPlayerName,
             whisper,
             whisperPartner
-        ));
+        );
+        messages.add(created);
 
         if (!isSystem && senderUUID != null && !senderUUID.equals(new UUID(0, 0)))
             rememberPlayer(senderUUID, rawPlayerName, senderName.getString());
@@ -513,6 +517,7 @@ public class ChatMessageStore {
         if (whisper && whisperPartner != null && !own) {
             markWhisperUnread(whisperPartner);
         }
+        return created;
     }
 
     public static Text sliceStyled(Text src, int start, int end) {
