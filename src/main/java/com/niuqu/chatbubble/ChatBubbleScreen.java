@@ -75,10 +75,6 @@ public class ChatBubbleScreen extends ChatScreen {
     private static final int BUBBLE_PAD_Y = UiTokens.BUBBLE_PAD_Y;
     private static final int NAME_H = 10;
     private static final int TIME_SEP_H = 14;
-    /** 私聊会话顶部「私聊 · 对象名」标题条的高度：标题条绘制与消息区顶部下移都取这一个值。
-     *  （原来条右侧还有一颗「本私聊免打扰」月亮按钮，已并入标题栏那颗按视图切换的按钮，
-     *  所以这里不再涉及按钮命中。） */
-    private static final int WHISPER_BAR_H = 14;
     public static final int BAR_H = 26;
     private static final int SIDEBAR_W = 90;
     private static final int SIDEBAR_ITEM_H = 22;
@@ -91,6 +87,11 @@ public class ChatBubbleScreen extends ChatScreen {
     private static final int DND_ROW_ICON_GAP = 2;
     /** 侧边栏底部状态行（在线人数 / 单人游戏）的文字颜色：绿色，暗浅主题下都够亮。 */
     private static final int SIDEBAR_STATUS_COLOR = 0xFF55FF55;
+    /** 玩家行头像右下角「在线/离线」状态点的颜色（3px 圆点，底衬见 drawSidebarStatusDot）。 */
+    private static final int SIDEBAR_DOT_ONLINE_COLOR = 0xFF55FF55;
+    private static final int SIDEBAR_DOT_OFFLINE_COLOR = 0xFF8A8A8A;
+    /** 状态点深色底衬的 alpha（半透明纯黑，刚好是圆点外一圈 1px）：浅色/白色头像上也能读出颜色。 */
+    private static final int SIDEBAR_DOT_RING_ALPHA = 0x99;
 
     private ChatBubbleTheme.Colors c() {
         return Appearance.snapshot();
@@ -102,14 +103,14 @@ public class ChatBubbleScreen extends ChatScreen {
 
     private static final int INPUT_H = 14;
     /** 输入框底色/描边相对输入框本体向外扩的像素数（renderBottomBar 里的 -2 / +2）。
-     *  输入框「看起来的那块矩形」= 本体上下各外扩这么多，状态行对齐用的就是它。 */
+     *  输入框「看起来的那块矩形」= 本体上下各外扩这么多。 */
     private static final int INPUT_BOX_OUTSET = 2;
     private static final int ICON_S = 14;
 
     /** 底部输入框本体的顶部 Y（底栏内垂直居中）。
-     *  绘制（renderBottomBar）、输入框 widget 定位（init/rebuildLayout）、
-     *  侧边栏状态行对齐（sidebarStatusY）全部从这里取值——以前三处各算一遍
-     *  (BAR_H - INPUT_H)/2，改一个常量就可能错位。 */
+     *  绘制（renderBottomBar）、输入框 widget 定位（init/rebuildLayout）都从这里取值
+     *  ——以前几处各算一遍 (BAR_H - INPUT_H)/2，改一个常量就可能错位。
+     *  侧边栏状态行不再经它推导，而是直接对齐输入框 widget 的文字 y（见 sidebarStatusY）。 */
     private int inputBarY() {
         return barTop + (BAR_H - INPUT_H) / 2;
     }
@@ -117,14 +118,6 @@ public class ChatBubbleScreen extends ChatScreen {
     /** 底部输入框本体的高度（不含 {@link #INPUT_BOX_OUTSET} 的外扩描边）。 */
     private int inputBarH() {
         return INPUT_H;
-    }
-
-    /** 底部输入框「可见矩形」（含外扩描边）的垂直中心：
-     *  上沿 = inputBarY - 2，下沿 = inputBarY + inputBarH + 2。 */
-    private int inputBoxCenterY() {
-        int top = inputBarY() - INPUT_BOX_OUTSET;
-        int bottom = inputBarY() + inputBarH() + INPUT_BOX_OUTSET;
-        return (top + bottom) / 2;
     }
 
     public static Identifier iconTex(String name) {
@@ -178,6 +171,15 @@ public class ChatBubbleScreen extends ChatScreen {
     private int sidebarScrollOffset;
     private int sidebarMaxScroll;
     private TextFieldWidget sidebarSearchBox;
+
+    // 私聊历史里出现过的对话对象名（侧边栏「私聊过但已下线」的玩家行用）。全量消息最多 1 万条，
+    // 不能每帧遍历全量消息：这里按「消息条数 + 末条消息对象身份」做版本指纹懒重建，命中时每帧
+    // 只做两次 int 比较并返回同一个不可变 List（零遍历、零分配）。指纹里带末条消息的对象身份
+    // 是为了防 setCurrentWorld 的 clear → loadMessages → addAll(early) 把条数凑回原值
+    // （重载走 fromLine 生成新对象，身份必变）。
+    private List<String> whisperPartnerCache = List.of();
+    private int whisperPartnerCacheSize = -1;
+    private int whisperPartnerCacheTail;
 
     private long sidebarAnimStart;
     private boolean sidebarTargetOpen;
@@ -535,26 +537,19 @@ public class ChatBubbleScreen extends ChatScreen {
         y += itemH + 2;
 
         if (client.player != null && client.player.networkHandler != null) {
-            var players = new ArrayList<>(client.player.networkHandler.getPlayerList());
-            String selfName = client.player.getName().getString();
-            String filter = sidebarSearchBox.getText().toLowerCase().trim();
+            // 行列表 = 在线玩家（TAB 列表顺序）+ 私聊历史里已下线的玩家（接在后面，按名字排序），
+            // 见 sidebarRows()。绘制 / 点击命中 / 滚动夹紧三处都只认这一份行列表，不会错位。
+            List<SidebarRow> rows = sidebarRows();
 
             int startY = SIDEBAR_LIST_TOP;
-            // 底部留出固定状态行的位置：列表（含 scissor）到它上方结束
+            // 列表可见区底部 = 原版表达式（见 sidebarListBottom 的注释）；状态行画在它下面那条带里
             int visibleBottom = sidebarListBottom();
-            int totalH = 0;
-            for (var info : players) {
-                String name = info.getProfile().name();
-                if (name.equals(selfName)) continue;
-                if (!filter.isEmpty() && !name.toLowerCase().contains(filter)) continue;
-                if (ChatBubbleClientSetup.config().isSidebarHidden(name)) continue;
-                totalH += itemH + 2;
-            }
+            int totalH = rows.size() * (itemH + 2);
 
             if (totalH == 0) {
-                // 列表空（全员离线 / 过滤无命中）时没有可滚动内容：把偏移一起归零，
+                // 列表空（全员离线且无历史 / 过滤无命中）时没有可滚动内容：把偏移一起归零，
                 // 否则旧偏移会一直留到下次有人上线，首行被裁掉半截。
-                clampSidebarScroll();
+                clampSidebarScroll(0);
                 int iconS = 32;
                 drawTextureIconAlpha(g, iconTex("no_online"), (SIDEBAR_W - iconS) / 2, startY + 8, iconS, alpha);
                 String noPlayers = Text.translatable("e33chat.sidebar.no_players").getString();
@@ -565,15 +560,12 @@ public class ChatBubbleScreen extends ChatScreen {
                 // 行数每帧都可能变（上下线 / 搜索词 / 隐藏规则）：画之前先把偏移夹回
                 // [0, 上限]。越界 offset 会把首行画到可见区上方、被 scissor 裁掉半截，
                 // 看起来就像"列表自己滚到了中间"。
-                clampSidebarScroll();
+                clampSidebarScroll(rows.size());
 
                 g.enableScissor(0, startY, SIDEBAR_W, visibleBottom);
                 int scrollY = startY - sidebarScrollOffset;
-                for (var info : players) {
-                    String name = info.getProfile().name();
-                    if (name.equals(selfName)) continue;
-                    if (!filter.isEmpty() && !name.toLowerCase().contains(filter)) continue;
-                    if (ChatBubbleClientSetup.config().isSidebarHidden(name)) continue;
+                for (SidebarRow row : rows) {
+                    String name = row.name;
 
                     if (scrollY + itemH > startY && scrollY < visibleBottom) {
                         boolean sel = name.equals(whisperPartner);
@@ -583,8 +575,17 @@ public class ChatBubbleScreen extends ChatScreen {
                         else if (hoverRow)
                             ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.SIDEBAR_HOVER), 0, scrollY, SIDEBAR_W, itemH, alpha);
 
-                        Identifier skin = com.niuqu.chatbubble.render.SkinResolver.getSkin(info.getProfile().id(), info.getProfile().name());
+                        // 头像：在线行走 TAB 列表里的 UUID；离线行（只在私聊历史里出现）用
+                        // ChatMessageStore.findSeenUuid 记住的 UUID，拿不到就是 null ——
+                        // SkinResolver 对 null UUID 是安全的（先查名字缓存，miss 就异步拉、
+                        // 当帧回退 DefaultSkinHelper 的默认皮肤）。
+                        Identifier skin = com.niuqu.chatbubble.render.SkinResolver.getSkin(row.uuid, name);
                         drawPlayerHead(g, skin, 4, scrollY + 3, 16, 18, alpha);
+                        // 在线/离线小圆点：贴在头像本体右下角。头像 16px 画在 x=4、y=scrollY+3，
+                        // 右下角 = (4+16, scrollY+3+16) = (20, scrollY+19)，圆点 3x3 从「右下角往内
+                        // 4px」起步 = (16, scrollY+15)；深色底衬再往左上各扩 1px（5x5，仍在头像内）。
+                        // 口径来自行本身：row.online（在 getPlayerList() 里 = 绿点，只在私聊历史里 = 灰点）。
+                        drawSidebarStatusDot(g, 16, scrollY + 15, row.online, alpha);
 
                         // 该玩家的私聊是否被单独设为免打扰：是则在头像右侧、名字左侧的图形区
                         // 画一个「纯月亮图标」（无圆角底，与标题栏的免打扰按钮共用同一张图）。
@@ -623,10 +624,11 @@ public class ChatBubbleScreen extends ChatScreen {
             }
         }
 
-        // 底部状态行：在线人数 / 单人游戏。放在侧边栏最底部那一行 —— 与右侧聊天
-        // 输入栏同一段 y（底部输入栏高 BAR_H，文字在其中垂直居中），列表紧贴其上方；
-        // 列表的 scissor 到 sidebarListBottom()（= 状态行上方 SIDEBAR_STATUS_PAD px）就结束，
-        // 状态行画在它下面，所以不随玩家列表滚动，玩家列表为空 / 搜索无结果时也照常显示。
+        // 底部状态行：在线人数 / 单人游戏，画在底部输入栏那条带子里（不占列表高度）。
+        // 列表的 scissor 停在 sidebarListBottom()（= 原版表达式 msgBottom > 0 ? msgBottom : height - BAR_H，
+        // 也就是「加状态行之前」列表停下的那条线），状态行在这条线**下面**的输入栏带子里、
+        // 垂直位置等于原版输入框文字所在的那一行（sidebarStatusY() = chatField.getY()）。
+        // 所以状态行既不会被 scissor 裁到，也不随玩家列表滚动；玩家列表为空 / 搜索无结果时照常显示。
         // 在线人数取 TAB 列表口径（getPlayerList()，含自己）。
         String statusText;
         if (client.isInSingleplayer()) {
@@ -650,63 +652,149 @@ public class ChatBubbleScreen extends ChatScreen {
             sidebarStatusY(), ChatBubbleTheme.alphaBlend(SIDEBAR_STATUS_COLOR, (int) (255 * alpha)), false);
     }
 
-    /** 侧边栏底部状态行文字与玩家列表底部之间留出的空白（列表 scissor / 点击命中 / 滚动夹紧
-     *  都以 sidebarListBottom() 为界，这里就是那段间隙）。
-     *  取 2：只留一条视觉缝。以前是 20——那 20px 空带完全落在状态行上方，它的上沿比右侧
-     *  输入框（可见底边 = barTop + INPUT_BOX_OUTSET）还高，侧边栏底部看起来比输入区"多出一块"，
-     *  左右不持平。列表底部因此下移到状态行正上方（barTop 附近），与右侧输入框同一段收口。 */
-    private static final int SIDEBAR_STATUS_PAD = 2;
-
-    /** 侧边栏底部状态行文字的顶部 Y：文字**垂直中心**对齐底部输入框（含 -2px 外扩
-     *  描边的那块可见矩形）的垂直中心，即 statusY = inputBoxCenterY - fontHeight/2。
-     *  几何全部取自 inputBarY()/inputBarH()/INPUT_BOX_OUTSET 这一份数值，
-     *  不再单独用 BAR_H 估一遍——以前用 (BAR_H - fontHeight)/2 会比输入框高出 1px，
-     *  看起来"文字偏上、下面多一小条空白"。 */
+    /** 侧边栏底部状态行文字的顶部 Y = **原版输入框文字的 y**，不再用 BAR_H/fontHeight 推导。
+     *
+     *  依据（原版/1.21.11 的 TextFieldWidget 自己的算法，javap -c 可验证）：
+     *  {@code updateTextPosition()} 里 {@code textY = getY() + (drawsBackground ? (height - 8) / 2 : 0)}；
+     *  本屏的输入框是 {@code setDrawsBackground(false)}（见 rebuildLayout），所以
+     *  **输入框文字的画布 y 就恒等于 chatField.getY()**（= ibY + 3，ibY = inputBarY()）。
+     *  直接借这个 widget 自己的 y，等于「照抄原版输入框文字画在哪一行」，渲染时两者必然同高；
+     *  chatField 还没建好（理论上不该发生）时退回同一个表达式 ibY + 3。 */
     private int sidebarStatusY() {
-        return inputBoxCenterY() - textRenderer.fontHeight / 2;
+        return chatField != null ? chatField.getY() : inputBarY() + 3;
     }
 
-    /** 侧边栏玩家列表可用区的底部 Y：到状态行文字顶部再往上留 {@link #SIDEBAR_STATUS_PAD}px
-     *  为止（状态行与列表之间那条 2px 的缝）。
-     *  绘制 / 点击命中 / 滚动夹紧共用这一个值：不留的话列表会画到状态行上、
-     *  scissor 也会把状态行一起裁掉，点状态行还可能命中最后一行玩家。 */
+    /** 侧边栏玩家列表**可见区底部**的 Y —— **原版（未加在线人数状态行之前）的表达式，原样恢复**。
+     *
+     *  唯一依据是 `git show 6c0f130:src/main/java/com/niuqu/chatbubble/ChatBubbleScreen.java`
+     *  （6c0f130 = 「加状态行之前」的已提交版本）里 renderSidebar 中的这一行：
+     *
+     *      {@code int visibleBottom = msgBottom > 0 ? msgBottom : height - BAR_H;}
+     *
+     *  原版它被用在三处：maxSideScroll 计算、{@code g.enableScissor(0, startY, SIDEBAR_W, visibleBottom)}、
+     *  以及行绘制条件 {@code scrollY + itemH > startY && scrollY < visibleBottom}。
+     *  这里把同一个表达式收进方法，让 scissor / 点击命中 / 滚动夹紧（sidebarListViewH）
+     *  三处继续共用这**一条**值（值必须与原表达式完全相等，不再做任何估算或取 max）。
+     *
+     *  msgBottom = barTop - 1、barTop = height - BAR_H（见 rebuildLayout），所以正常情况下它等于
+     *  height - BAR_H - 1 —— 正好是「加状态行之前」列表停下的那条线：列表底部与底部输入栏
+     *  那条带子的上沿齐齐，状态行随后画在这条线**下面的带子里**（见 sidebarStatusY），
+     *  既不占列表高度，也不会在列表和状态行之间留出多余空带。 */
     private int sidebarListBottom() {
-        return Math.max(SIDEBAR_LIST_TOP, sidebarStatusY() - SIDEBAR_STATUS_PAD);
+        return msgBottom > 0 ? msgBottom : height - BAR_H;
     }
 
-    /** 侧边栏玩家列表可见区高度（底部到状态行正上方、再扣掉顶部搜索/世界频道那一段，
-     *  与 renderSidebar 里的 visibleBottom 同源）。 */
+    /** 侧边栏玩家列表可见区高度（底部 = 原版表达式 sidebarListBottom()，再扣掉顶部
+     *  搜索框 / 世界频道那一行占掉的高度，与 renderSidebar 里的 visibleBottom 同源）。 */
     private int sidebarListViewH() {
         return Math.max(0, sidebarListBottom() - SIDEBAR_LIST_TOP);
     }
 
-    /** 按当前搜索词 + 隐藏规则重新数一遍玩家行数。刻意不复用上一帧渲染的 totalH：
-     *  点行/清空搜索框时列表内容已经变了，旧值不可信。 */
-    private int sidebarVisibleRows() {
-        if (client == null || client.player == null || client.player.networkHandler == null) return 0;
+    /** 侧边栏玩家列表的一行。online=true = 该玩家当前在 TAB 列表里（绿点）；
+     *  false = 只在私聊历史里出现、已经下线（灰点）。
+     *  uuid 只用于取皮肤，可能为 null（离线行找不到记住的 UUID → SkinResolver 回退默认皮肤）。 */
+    private static final class SidebarRow {
+        final String name;
+        final boolean online;
+        final UUID uuid;
+
+        SidebarRow(String name, boolean online, UUID uuid) {
+            this.name = name;
+            this.online = online;
+            this.uuid = uuid;
+        }
+    }
+
+    /** 名字归一化键：去掉 § 颜色码、去首尾空白、全小写。
+     *  在线行用 profile 名、离线行用私聊历史里存的对象名，两者可能只差大小写或带色码；
+     *  判重必须归一后再比，否则同一个玩家会占两行。
+     *  实现只有一份：{@link ChatBubbleClientSetup#normalizePlayerName(String)}（私聊「服务器
+     *  没装 E33Chat」提示的去重表也用同一个键，两边不能各写一套）。 */
+    private static String sidebarNameKey(String name) {
+        return ChatBubbleClientSetup.normalizePlayerName(name);
+    }
+
+    /** 私聊历史里出现过的对话对象名（按首次出现顺序去重；含已下线 / 已退出服务器的人）。
+     *  **每帧只读缓存**：遍历全量消息只发生在「消息列表变了」之后的第一帧。
+     *  数据来源就是 store 的 messages 里的 whisper + whisperPartner —— 与
+     *  getLatestWhisperWith / hasUnreadWhisper 用的是同一个字段，所以离线行点进去照样能看历史。 */
+    private List<String> whisperPartnerNames() {
+        List<ChatMessageStore.ChatMessage> msgs = ChatMessageStore.getMessages();
+        int size = msgs.size();
+        int tail = size == 0 ? 0 : System.identityHashCode(msgs.get(size - 1));
+        if (size == whisperPartnerCacheSize && tail == whisperPartnerCacheTail)
+            return whisperPartnerCache;
+        java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>();
+        for (ChatMessageStore.ChatMessage msg : msgs) {
+            if (msg == null || !msg.whisper()) continue;
+            String partner = msg.whisperPartner();
+            if (partner != null && !partner.isBlank()) names.add(partner);
+        }
+        whisperPartnerCache = List.copyOf(names);
+        whisperPartnerCacheSize = size;
+        whisperPartnerCacheTail = tail;
+        return whisperPartnerCache;
+    }
+
+    /** 侧边栏玩家行的唯一数据源（绘制 / 点击命中 / 滚动夹紧共用）。
+     *
+     *  1) 在线：client.player.networkHandler.getPlayerList()（与 TAB 列表同一份数据，只含在线玩家），
+     *     保持它原来的顺序，排在最前。
+     *  2) 离线：whisperPartnerNames()（私聊历史里出现过的对话对象）。它按「消息条数 +
+     *     末条消息对象身份」做版本指纹懒重建，每帧只读缓存，不会遍历最多 10000 条全量消息。
+     *     这些行接在在线行之后，按名字排序
+     *     （String::compareToIgnoreCase，简单稳定：同一批人每次都得到同一顺序）。
+     *  3) 判重：sidebarNameKey（去 § 色码 + 小写）。同一玩家既在线又有私聊历史时只保留在线那一行。
+     *  搜索过滤与隐藏规则对两类行一视同仁（与改动前一致）。 */
+    private List<SidebarRow> sidebarRows() {
+        List<SidebarRow> rows = new ArrayList<>();
+        if (client == null || client.player == null) return rows;
         String selfName = client.player.getName().getString();
+        String selfKey = sidebarNameKey(selfName);
         String filter = sidebarSearchBox != null ? sidebarSearchBox.getText().toLowerCase().trim() : "";
-        int rows = 0;
-        for (var info : client.player.networkHandler.getPlayerList()) {
-            String name = info.getProfile().name();
-            if (name.equals(selfName)) continue;
+        java.util.Set<String> seen = new java.util.HashSet<>();
+
+        if (client.player.networkHandler != null) {
+            for (var info : client.player.networkHandler.getPlayerList()) {
+                String name = info.getProfile().name();
+                if (name == null || name.equals(selfName)) continue;
+                if (!filter.isEmpty() && !name.toLowerCase().contains(filter)) continue;
+                if (ChatBubbleClientSetup.config().isSidebarHidden(name)) continue;
+                if (!seen.add(sidebarNameKey(name))) continue;
+                rows.add(new SidebarRow(name, true, info.getProfile().id()));
+            }
+        }
+
+        List<String> offline = new ArrayList<>();
+        for (String name : whisperPartnerNames()) {
+            if (name == null || name.isBlank()) continue;
+            String key = sidebarNameKey(name);
+            if (key.isEmpty() || key.equals(selfKey)) continue;
             if (!filter.isEmpty() && !name.toLowerCase().contains(filter)) continue;
             if (ChatBubbleClientSetup.config().isSidebarHidden(name)) continue;
-            rows++;
+            if (!seen.add(key)) continue;
+            offline.add(name);
         }
+        offline.sort(String::compareToIgnoreCase);
+        for (String name : offline) rows.add(new SidebarRow(name, false, ChatMessageStore.findSeenUuid(name)));
         return rows;
     }
 
-    /** 把侧边栏滚动偏移夹进 [0, 当前上限]。
-     *  列表是每帧按玩家列表/搜索词/隐藏规则重建的，行数随时可能变少（有人下线、过滤词
-     *  变化、切换会话时清空搜索框、隐藏规则变更）。offset 一旦停在越界值，首行就会被
+    /** 把侧边栏滚动偏移夹进 [0, 当前上限]（行数由调用方给出，避免同一帧重复建行列表）。
+     *  列表是每帧按在线玩家 / 私聊历史 / 搜索词 / 隐藏规则重建的，行数随时可能变少（有人下线、
+     *  过滤词变化、切换会话时清空搜索框、隐藏规则变更）。offset 一旦停在越界值，首行就会被
      *  画到可见区上方并被 scissor 裁掉半截，看起来像"列表自己滚到了中间"。因此凡是
      *  可能改变行数的地方都夹一次，不只依赖 render 里的那一处。 */
-    private void clampSidebarScroll() {
-        int totalH = sidebarVisibleRows() * (SIDEBAR_ITEM_H + 2);
+    private void clampSidebarScroll(int rows) {
+        int totalH = rows * (SIDEBAR_ITEM_H + 2);
         sidebarMaxScroll = Math.max(0, totalH - sidebarListViewH());
         if (sidebarScrollOffset < 0) sidebarScrollOffset = 0;
         if (sidebarScrollOffset > sidebarMaxScroll) sidebarScrollOffset = sidebarMaxScroll;
+    }
+
+    /** 自己数一遍行数再夹 —— 给「不在 render 里、手上没有行列表」的调用点用。 */
+    private void clampSidebarScroll() {
+        clampSidebarScroll(sidebarRows().size());
     }
 
     /** 按像素宽度截断并补 "..."（项目里原有 trimToWidth + "..." 写法抽成一处）。
@@ -1125,34 +1213,25 @@ if (this.getFocused() != null && this.getFocused().keyPressed(input))
 
             int y2 = searchY + searchH + 3;
             if (mouseY >= y2 && mouseY <= y2 + SIDEBAR_ITEM_H) {
-                whisperPartner = null; beginConversationSwitch(); setFocused(chatField); scrollToBottom = true; return true;
+                enterConversation(null); return true;
             }
             y2 += SIDEBAR_ITEM_H + 2;
-            // 命中测试必须用与绘制同一套夹紧后的偏移：列表行数变了以后旧 offset 可能越界，
-            // 不夹就会点到"看起来在别处"的那一行。
-            clampSidebarScroll();
-            if (client.player != null && client.player.networkHandler != null) {
-                var players = new ArrayList<>(client.player.networkHandler.getPlayerList());
-                String selfName = client.player.getName().getString();
-                String filter = sidebarSearchBox.getText().toLowerCase().trim();
-                int scrollY = y2 - sidebarScrollOffset;
-                // 状态行所在的底部一条不参与行命中：列表被 scissor 在它上方截断后，
-                // 下半截被裁掉的那一行不该还能点中。
-                int listBottom = sidebarListBottom();
-                for (var info : players) {
-                    String name = info.getProfile().name();
-                    if (name.equals(selfName)) continue;
-                    if (!filter.isEmpty() && !name.toLowerCase().contains(filter)) continue;
-                    // 与 renderSidebar 保持一致：被隐藏规则过滤掉的玩家不占行，
-                    // 否则点击行号会和可见行错位（点到别人、会话"跳转"到另一个人）。
-                    if (ChatBubbleClientSetup.config().isSidebarHidden(name)) continue;
-                    if (mouseY >= scrollY && mouseY <= scrollY + SIDEBAR_ITEM_H && mouseY < listBottom) {
-                        whisperPartner = name;
-                        ChatMessageStore.clearUnreadWhisper(name);
-                        beginConversationSwitch(); setFocused(chatField); scrollToBottom = true; return true;
-                    }
-                    scrollY += SIDEBAR_ITEM_H + 2;
+            // 命中测试必须用与绘制同一份行列表、同一套夹紧后的偏移：列表行数变了以后旧 offset
+            // 可能越界，不夹就会点到"看起来在别处"的那一行；行列表同源才能保证第 n 行就是第 n 行
+            // （离线行也一并参与命中——点离线行同样切到该私聊，只是发不出去而已）。
+            List<SidebarRow> rows = sidebarRows();
+            clampSidebarScroll(rows.size());
+            int scrollY = y2 - sidebarScrollOffset;
+            // 状态行所在的底部一条不参与行命中：列表被 scissor 在它上方截断后，
+            // 下半截被裁掉的那一行不该还能点中。
+            int listBottom = sidebarListBottom();
+            for (SidebarRow row : rows) {
+                String name = row.name;
+                if (mouseY >= scrollY && mouseY <= scrollY + SIDEBAR_ITEM_H && mouseY < listBottom) {
+                    enterConversation(name);
+                    return true;
                 }
+                scrollY += SIDEBAR_ITEM_H + 2;
             }
         }
 
@@ -1673,10 +1752,7 @@ boolean selDrag = textSelection.isDragActive();
             if (my >= menuY && my <= menuY + CTX_ITEM_H) {
                 client.player.networkHandler.sendChatCommand((ChatMessageStore.useTpa() ? "tpa " : "tp ") + name);
             } else if (my >= menuY + CTX_ITEM_H + 2 && my <= menuY + CTX_ITEM_H * 2 + 2) {
-                whisperPartner = name;
-                ChatMessageStore.clearUnreadWhisper(name);
-                beginConversationSwitch();
-                setFocused(chatField); scrollToBottom = true;
+                enterConversation(name);
             } else if (my >= menuY + CTX_ITEM_H * 2 + 4 && my <= menuY + menuH) {
                 toggleBlockedPlayer();
             }
@@ -1890,6 +1966,21 @@ boolean selDrag = textSelection.isDragActive();
             ChatBubbleTheme.alphaBlend(theme().dndAccent(), a));
     }
 
+    /** 玩家行头像右下角的「在线/离线」状态点（3px 圆点 + 1px 深色底衬）。
+     *  x/y = 彩色圆点左上角；底衬是 5x5 半透明纯黑（正好在圆点外留一圈 1px），
+     *  这样白色/浅色头像上也能一眼读出绿点/灰点。两者都用 RoundRectRenderer 的圆角 fill
+     *  （3x3 半径 1、5x5 半径 2 —— 该尺寸下等于圆），透明度跟随侧边栏淡入淡出，
+     *  否则淡入过程中会冒出一颗"不跟着淡入的点"。
+     *  只画在头像区域内：不碰右侧月亮图标、名字截断、行高，也不参与任何命中测试。 */
+    private void drawSidebarStatusDot(DrawContext g, int x, int y, boolean online, float alpha) {
+        int a = (int) (255 * alpha);
+        if (a <= 1) return;
+        RoundRectRenderer.fill(g, x - 1, y - 1, x + 4, y + 4, 2.5f,
+            ChatBubbleTheme.alphaBlend(0xFF000000, (int) (SIDEBAR_DOT_RING_ALPHA * alpha)));
+        RoundRectRenderer.fill(g, x, y, x + 3, y + 3, 2f,
+            ChatBubbleTheme.alphaBlend(online ? SIDEBAR_DOT_ONLINE_COLOR : SIDEBAR_DOT_OFFLINE_COLOR, a));
+    }
+
     /** 免打扰按钮左上角 X：紧跟汉堡按钮右侧（汉堡起于 panelX+3、宽 ICON_S，再留 4px 间隙）。 */
     private int dndButtonX() { return panelX + 3 + ICON_S + 4; }
 
@@ -1987,6 +2078,33 @@ boolean selDrag = textSelection.isDragActive();
 
 
 
+    /** 进入某个会话：{@code partner == null} = 公屏，否则 = 与 partner 的私聊。
+     *  这是「切换当前会话」的**唯一入口**：设置 whisperPartner、清该私聊的未读、清侧边栏
+     *  过滤/滚动、下一帧落到新会话底部，私聊时再按需插一条「本服未装 E33Chat」的提示。
+     *  原本各自赋值 whisperPartner 的三处（侧边栏「公屏」行、侧边栏玩家行、头像右键「私聊」）
+     *  全部改走这里，避免以后新增入口时漏掉提示。 */
+    private void enterConversation(String partner) {
+        whisperPartner = partner;
+        if (partner != null) {
+            ChatMessageStore.clearUnreadWhisper(partner);
+            notifyWhisperUnavailableIfNeeded(partner);
+        }
+        beginConversationSwitch();
+        setFocused(chatField);
+        scrollToBottom = true;
+    }
+
+    /** 服务器没装 E33Chat 时的私聊提示：每个私聊会话在本次连接内只插一条（去重表在
+     *  {@link ChatBubbleClientSetup}，连接边界清空；名字去掉 § 色码后小写归一化）。
+     *  走 addLocalNotice —— 不计未读、不弹横幅、不发声、不置 historyDirty。
+     *  状态还是 UNKNOWN（首次入服 / 探测失败 / 单机）时**不提示**：宁可晚一点，也不误报。 */
+    private void notifyWhisperUnavailableIfNeeded(String partner) {
+        if (!ChatBubbleClientSetup.claimWhisperUnavailableNotice(partner)) return;
+        ChatMessageStore.addLocalNotice(Text.translatable("e33chat.whisper.unavailable"), partner);
+        ChatMessageStore.debugLog(() ->
+            "[e33chat] whisper notice inserted (server has no E33Chat) | partner=" + partner);
+    }
+
     /** 切换私聊/公共频道的统一收尾：搜索框只在真有内容时清空 + 下一帧直接落到新会话底部。
      *  注意 TextFieldWidget.setText 不比较新旧文本、永远回调 changedListener，
      *  而侧边栏搜索框的监听器会把 sidebarScrollOffset 归零 —— 于是"点一下玩家行、
@@ -2024,21 +2142,10 @@ boolean selDrag = textSelection.isDragActive();
         } else {
             messages = ChatMessageStore.getPublicMessages();
         }
-        // 私聊标题条先画：不能放在下面「空会话直接 return」之后，否则刚点开一个还没有
-        // 聊天记录的玩家时整条标题条消失。（原来这里还画一个「本私聊免打扰」月亮按钮，
-        // 现在已统一到标题栏那颗按视图切换的月亮按钮上，标题条只剩居中文字。）
-        int indicatorH = 0;
-        if (whisperPartner != null) {
-            indicatorH = WHISPER_BAR_H;
-            int indY = msgTop;
-            ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.WHISPER_BAR), panelX, indY, panelW, indicatorH, getAnimProgress());
-            // 标题条右侧不再有按钮：居中文字只留左右各 8px 内边距，名字过长时按面板宽省略。
-            int modeMaxW = Math.max(20, panelW - 2 * 8);
-            String modeLabel = Text.translatable("e33chat.whisper.mode").getString() + ": " + whisperPartner;
-            String modeText = ellipsize(modeLabel, modeMaxW);
-            int modeTW = textRenderer.getWidth(modeText);
-            g.drawText(textRenderer, modeText, panelX + (panelW - modeTW) / 2, indY + 2, c().textPrimary(), false);
-        }
+        // 私聊视图顶部那条紫色「私聊 · 对象名」横条已整条删除：消息区直接从 msgTop 开始，
+        // 不再有 14px 的顶部预留（原来的 indicatorH，绘制/底色/文字/预留高度一起删）。
+        // 因此 effectiveMsgTop == msgTop，滚动范围/裁剪区/滚动条轨道都和公屏视图完全一致，
+        // 顶部不会留下一条空白带。私聊对象名仍在标题栏显示（getDisplayTitle()），不受影响。
 
         if (messages.isEmpty()) {
             // 空会话没有可滚动内容：丢弃这一次吸附请求，并把上一会话的滚动状态归零，
@@ -2048,7 +2155,7 @@ boolean selDrag = textSelection.isDragActive();
             return;
         }
 
-        int effectiveMsgTop = msgTop + indicatorH;
+        int effectiveMsgTop = msgTop;
         int effectiveMsgBottom = newMessageCount > 0 ? barTop - NOTIF_H - 1 : msgBottom;
         int areaH = effectiveMsgBottom - effectiveMsgTop;
 

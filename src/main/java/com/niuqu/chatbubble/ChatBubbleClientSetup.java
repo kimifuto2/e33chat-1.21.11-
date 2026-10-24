@@ -53,6 +53,59 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
     private static boolean customChannelsRegistered;
     private static java.util.Set<String> rememberedServers;
 
+    // ── 「服务端是否也装了本模组」的探测状态 ──────────────────────────────────
+    // JOIN 时用 ClientPlayNetworking.canSend(QuoteSyncPayload.ID) 判定，连接边界重置。
+    // 私聊「增强功能不可用」的提示只在确认为 ABSENT 时出现：UNKNOWN（还没探测 / 探测
+    // 抛异常 / 单机）一律不提示 —— 宁可晚一点，也不要误报。
+    private enum ServerModState { UNKNOWN, PRESENT, ABSENT }
+
+    private static volatile ServerModState serverModState = ServerModState.UNKNOWN;
+
+    /** 本次连接内已经提示过「服务器没装 E33Chat」的私聊对象（归一化后的名字）。 */
+    private static final java.util.Set<String> whisperUnavailableNotices =
+        new java.util.LinkedHashSet<>();
+
+    /** 服务端是否也装了本模组（联动功能可用）。**未探测时返回 false** —— 想判「服务端
+     *  没装」必须走 {@link #claimWhisperUnavailableNotice(String)}（它还要求状态已确认为
+     *  ABSENT），不要写成 {@code !serverHasE33Chat()}，否则首次入服会误报。 */
+    public static boolean serverHasE33Chat() {
+        return serverModState == ServerModState.PRESENT;
+    }
+
+    /** 探测是否已有结果（false = 尚未探测 / 探测失败）。 */
+    public static boolean serverModStateKnown() {
+        return serverModState != ServerModState.UNKNOWN;
+    }
+
+    /** 连接边界（JOIN 开头 / DISCONNECT）重置：探测结果失效，私聊提示去重表清空。 */
+    private static synchronized void resetConnectionState() {
+        serverModState = ServerModState.UNKNOWN;
+        whisperUnavailableNotices.clear();
+    }
+
+    /** 玩家名归一化：去掉 § 色码（§ 与其后紧跟的 1 个字符）、首尾空白，统一小写。 */
+    static String normalizePlayerName(String name) {
+        if (name == null) return "";
+        StringBuilder sb = new StringBuilder(name.length());
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c == '\u00a7') { i++; continue; }   // § 后紧跟的格式码一起丢掉
+            sb.append(c);
+        }
+        return sb.toString().trim().toLowerCase(java.util.Locale.ROOT);
+    }
+
+    /**
+     * 私聊「增强功能不可用」提示的闸门：**本次连接内**首次进入某个私聊会话、且已确认
+     * 服务端没装 E33Chat 时返回 true（并记为已提示）。未探测 / 服务端有模组 / 名字为空 → false。
+     */
+    public static synchronized boolean claimWhisperUnavailableNotice(String partner) {
+        String key = normalizePlayerName(partner);
+        if (key.isEmpty()) return false;
+        if (serverModState != ServerModState.ABSENT) return false;
+        return whisperUnavailableNotices.add(key);
+    }
+
     /** 当前连接的目标服务器地址；单机/局域网（集成服务器）返回 null。 */
     private static String currentServerAddress(MinecraftClient client) {
         try {
@@ -374,18 +427,28 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
         // 玩家不需要手动建任何文件；下次连接即带联动。首次连接因协议时序无法联动。
         net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.JOIN.register(
             (handler, sender, client) -> {
-                if (forceOff) return;
+                // 连接边界：探测结果与「私聊提示已经出过」的去重表都重新开始
+                // （换服 / 重连后要重新判断，提示也重新计一次）。
+                resetConnectionState();
                 try {
                     String addr = currentServerAddress(client);
-                    if (addr == null) return;   // 单机 / 自己是局域网主机：集成服务器那条路径
+                    // 「服务端是否也装了本模组」：集成服务器（单机 / 自己是局域网主机）跑的
+                    // 就是这个 jar 的服务端入口，一定装了；远程靠 canSend（服务端也装了本模组
+                    // 才会为 QuoteSyncPayload 注册接收器）。该探测与「是否声明通道」
+                    // （forceOff / 白名单）无关，所以必须放在 forceOff 早退之前 —— 否则开着
+                    // forceOff 的玩家永远拿不到结果，私聊提示也就永远不出现。
+                    boolean integrated = addr == null;
+                    boolean serverHasE33 = integrated
+                        || net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.canSend(
+                            com.niuqu.chatbubble.network.QuoteSyncPayload.ID);
+                    serverModState = serverHasE33 ? ServerModState.PRESENT : ServerModState.ABSENT;
+                    if (integrated) return;   // 单机 / 自己是局域网主机：集成服务器那条路径
+                    if (forceOff) return;
                     // 局域网/私有网段在配置阶段就已注册（见 START 钩子），这里只需复查
                     // 「服务器是否真的装了 E33Chat」并维护白名单，不再是首次生效的分界点。
                     boolean local = isLocalAddress(addr);
                     // canSend 反映的是「服务器是否声明支持该通道」，因此即使本次没声明也能
                     // 用它复查服务器当前是否真的还装着 E33Chat —— 白名单靠这个自我修复。
-                    boolean serverHasE33 =
-                        net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.canSend(
-                            com.niuqu.chatbubble.network.QuoteSyncPayload.ID);
                     if (!serverHasE33) {
                         // 服务器已移除 E33Chat：忘掉它，之后连它不再声明通道（避免被严格服务端踢）
                         if (forgetServer(addr)) {
@@ -411,6 +474,10 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                     // best effort: never disturb the connection
                 }
             });
+
+        // 断开（回主菜单 / 换服）时清掉连接级状态：探测结果作废、私聊提示去重表清空。
+        net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.DISCONNECT.register(
+            (handler, client) -> resetConnectionState());
 
         startStallWatchdog();
 

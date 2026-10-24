@@ -170,6 +170,7 @@
   "e33chat.dnd.off": "当前公屏已关闭免打扰",
   "e33chat.dnd.whisper.on": "已对 %s 开启私聊免打扰",
   "e33chat.dnd.whisper.off": "已关闭对 %s 的私聊免打扰",
+  "e33chat.whisper.unavailable": "当前服务器未安装 E33Chat，私聊增强功能不可用（仍可收发消息）",
   "e33chat.config.dnd_enabled": "公屏免打扰（DND）",
   "e33chat.config.dnd_enabled.desc": "只静默公屏/系统消息的灵动岛横幅与提示音；私聊按每个玩家单独开关（标题栏左侧那颗月亮按钮，在私聊视图下切换的就是当前对象），有人 @你 / 引用你时始终弹（@提醒优先），聊天图标红点不受影响",
   "e33chat.config.section.panel": "面板",

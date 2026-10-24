@@ -170,6 +170,7 @@
   "e33chat.dnd.off": "Public chat Do Not Disturb is now OFF",
   "e33chat.dnd.whisper.on": "Do Not Disturb enabled for whispers with %s",
   "e33chat.dnd.whisper.off": "Do Not Disturb disabled for whispers with %s",
+  "e33chat.whisper.unavailable": "This server does not have E33Chat installed; enhanced private chat is unavailable (messages still work)",
   "e33chat.config.dnd_enabled": "Public Do Not Disturb (DND)",
   "e33chat.config.dnd_enabled.desc": "Only silences the island banner and sounds for public/system messages; whispers have their own per-player switch (the moon button left of the title bar toggles whichever view you are in). @mentions and quotes always come through, and the chat-icon red dot is unaffected",
   "e33chat.config.section.panel": "Panel",
