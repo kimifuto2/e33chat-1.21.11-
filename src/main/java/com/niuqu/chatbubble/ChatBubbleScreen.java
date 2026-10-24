@@ -75,10 +75,22 @@ public class ChatBubbleScreen extends ChatScreen {
     private static final int BUBBLE_PAD_Y = UiTokens.BUBBLE_PAD_Y;
     private static final int NAME_H = 10;
     private static final int TIME_SEP_H = 14;
+    /** 私聊会话顶部「私聊 · 对象名」标题条的高度：标题条绘制与消息区顶部下移都取这一个值。
+     *  （原来条右侧还有一颗「本私聊免打扰」月亮按钮，已并入标题栏那颗按视图切换的按钮，
+     *  所以这里不再涉及按钮命中。） */
+    private static final int WHISPER_BAR_H = 14;
     public static final int BAR_H = 26;
     private static final int SIDEBAR_W = 90;
     private static final int SIDEBAR_ITEM_H = 22;
     private static final int SIDEBAR_ICON_S = 20;
+    /** 玩家行「私聊免打扰」纯月亮图标的边长（无圆角底，就是图标本身，故取 9px）。 */
+    private static final int DND_ROW_ICON = 9;
+    /** 月亮图标的 X：紧贴头像右侧（头像 16px 画在 x=4，外层 hat 扩到 x=21）。 */
+    private static final int DND_ROW_ICON_X = 22;
+    /** 图标与名字之间的间距：名字整体右移「图标宽 + 间距」，把宽度让给图标。 */
+    private static final int DND_ROW_ICON_GAP = 2;
+    /** 侧边栏底部状态行（在线人数 / 单人游戏）的文字颜色：绿色，暗浅主题下都够亮。 */
+    private static final int SIDEBAR_STATUS_COLOR = 0xFF55FF55;
 
     private ChatBubbleTheme.Colors c() {
         return Appearance.snapshot();
@@ -89,7 +101,31 @@ public class ChatBubbleScreen extends ChatScreen {
     }
 
     private static final int INPUT_H = 14;
+    /** 输入框底色/描边相对输入框本体向外扩的像素数（renderBottomBar 里的 -2 / +2）。
+     *  输入框「看起来的那块矩形」= 本体上下各外扩这么多，状态行对齐用的就是它。 */
+    private static final int INPUT_BOX_OUTSET = 2;
     private static final int ICON_S = 14;
+
+    /** 底部输入框本体的顶部 Y（底栏内垂直居中）。
+     *  绘制（renderBottomBar）、输入框 widget 定位（init/rebuildLayout）、
+     *  侧边栏状态行对齐（sidebarStatusY）全部从这里取值——以前三处各算一遍
+     *  (BAR_H - INPUT_H)/2，改一个常量就可能错位。 */
+    private int inputBarY() {
+        return barTop + (BAR_H - INPUT_H) / 2;
+    }
+
+    /** 底部输入框本体的高度（不含 {@link #INPUT_BOX_OUTSET} 的外扩描边）。 */
+    private int inputBarH() {
+        return INPUT_H;
+    }
+
+    /** 底部输入框「可见矩形」（含外扩描边）的垂直中心：
+     *  上沿 = inputBarY - 2，下沿 = inputBarY + inputBarH + 2。 */
+    private int inputBoxCenterY() {
+        int top = inputBarY() - INPUT_BOX_OUTSET;
+        int bottom = inputBarY() + inputBarH() + INPUT_BOX_OUTSET;
+        return (top + bottom) / 2;
+    }
 
     public static Identifier iconTex(String name) {
         String theme = Appearance.resolvedTheme().name().toLowerCase();
@@ -115,6 +151,9 @@ public class ChatBubbleScreen extends ChatScreen {
     private int maxScroll;
     private boolean scrollToBottom = true;
     private boolean firstRender = true;
+    // 切换私聊会话后的一次性请求：下一帧直接把 scrollOffset 钉到新会话底部，
+    // 不从旧会话的偏移做 150ms 插值（否则会看到内容从旧位置滑/跳过去）。
+    private boolean scrollSnapPending;
     private static String savedInput = "";
     private boolean emojiReplacing;
 
@@ -312,7 +351,7 @@ public class ChatBubbleScreen extends ChatScreen {
         barTop = height - BAR_H;
         msgBottom = barTop - 1;
 
-        int ibY = barTop + (BAR_H - INPUT_H) / 2;
+        int ibY = inputBarY();
         inputY = ibY;
         inputX = panelX + 4 + ICON_S + 3;
         int sendX = panelX + panelW - PAD - ICON_S + 2;
@@ -393,7 +432,7 @@ public class ChatBubbleScreen extends ChatScreen {
         barTop = height - BAR_H;
         msgBottom = barTop - 1;
 
-        int ibY = barTop + (BAR_H - INPUT_H) / 2;
+        int ibY = inputBarY();
         inputY = ibY;
         inputX = panelX + 4 + ICON_S + 3;
         int sendX = panelX + panelW - PAD - ICON_S + 2;
@@ -453,6 +492,9 @@ public class ChatBubbleScreen extends ChatScreen {
     }
 
     private static final int SIDEBAR_SEARCH_H = 14;
+    /** 侧边栏玩家列表可见区顶部 Y：搜索框（2+14）+ 3 间隔 + 世界频道行（22）+ 2 间隔。
+     *  绘制与点击命中共用这一个值，滚动夹紧也用它算可见高度。 */
+    private static final int SIDEBAR_LIST_TOP = 2 + SIDEBAR_SEARCH_H + 3 + SIDEBAR_ITEM_H + 2;
 
     private void renderSidebar(DrawContext g, int mouseX, int mouseY, float alpha) {
         ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.SIDEBAR_BG), 0, 0, SIDEBAR_W, height, alpha);
@@ -488,9 +530,7 @@ public class ChatBubbleScreen extends ChatScreen {
         if (latestPub != null) {
             int previewMaxW = SIDEBAR_W - nameX - 4;
             String preview = ChatMessageStore.singleLine(latestPub.content().getString());
-            String previewDisplay = textRenderer.trimToWidth(preview, previewMaxW - textRenderer.getWidth("..."));
-            if (!previewDisplay.equals(preview)) previewDisplay += "...";
-            g.drawText(textRenderer, previewDisplay, nameX, y + 1 + textRenderer.fontHeight, c().textMuted(), false);
+            g.drawText(textRenderer, ellipsize(preview, previewMaxW), nameX, y + 1 + textRenderer.fontHeight, c().textMuted(), false);
         }
         y += itemH + 2;
 
@@ -499,8 +539,9 @@ public class ChatBubbleScreen extends ChatScreen {
             String selfName = client.player.getName().getString();
             String filter = sidebarSearchBox.getText().toLowerCase().trim();
 
-            int startY = y;
-            int visibleBottom = msgBottom > 0 ? msgBottom : height - BAR_H;
+            int startY = SIDEBAR_LIST_TOP;
+            // 底部留出固定状态行的位置：列表（含 scissor）到它上方结束
+            int visibleBottom = sidebarListBottom();
             int totalH = 0;
             for (var info : players) {
                 String name = info.getProfile().name();
@@ -511,6 +552,9 @@ public class ChatBubbleScreen extends ChatScreen {
             }
 
             if (totalH == 0) {
+                // 列表空（全员离线 / 过滤无命中）时没有可滚动内容：把偏移一起归零，
+                // 否则旧偏移会一直留到下次有人上线，首行被裁掉半截。
+                clampSidebarScroll();
                 int iconS = 32;
                 drawTextureIconAlpha(g, iconTex("no_online"), (SIDEBAR_W - iconS) / 2, startY + 8, iconS, alpha);
                 String noPlayers = Text.translatable("e33chat.sidebar.no_players").getString();
@@ -518,9 +562,10 @@ public class ChatBubbleScreen extends ChatScreen {
                 g.drawText(textRenderer, noPlayers,
                     (SIDEBAR_W - textW) / 2, startY + 8 + iconS + 4, c().textMuted(), false);
             } else {
-                int maxSideScroll = Math.max(0, totalH - (visibleBottom - startY));
-                sidebarMaxScroll = maxSideScroll;
-                if (sidebarScrollOffset > maxSideScroll) sidebarScrollOffset = maxSideScroll;
+                // 行数每帧都可能变（上下线 / 搜索词 / 隐藏规则）：画之前先把偏移夹回
+                // [0, 上限]。越界 offset 会把首行画到可见区上方、被 scissor 裁掉半截，
+                // 看起来就像"列表自己滚到了中间"。
+                clampSidebarScroll();
 
                 g.enableScissor(0, startY, SIDEBAR_W, visibleBottom);
                 int scrollY = startY - sidebarScrollOffset;
@@ -541,18 +586,29 @@ public class ChatBubbleScreen extends ChatScreen {
                         Identifier skin = com.niuqu.chatbubble.render.SkinResolver.getSkin(info.getProfile().id(), info.getProfile().name());
                         drawPlayerHead(g, skin, 4, scrollY + 3, 16, 18, alpha);
 
+                        // 该玩家的私聊是否被单独设为免打扰：是则在头像右侧、名字左侧的图形区
+                        // 画一个「纯月亮图标」（无圆角底，与标题栏的免打扰按钮共用同一张图）。
+                        // 图标染成紫色（深/浅主题各一档，见 ChatBubbleTheme.dndAccent）：
+                        // 白色/深棕的月亮与玩家名（白/深米色）太接近，紫色才能一眼区分
+                        // "这个名字旁边有个静音标记"。
+                        boolean dndRow = ChatBubbleClientSetup.config().isWhisperDnd(name);
+                        if (dndRow) {
+                            int dndIconY = scrollY + 1 + (textRenderer.fontHeight - DND_ROW_ICON) / 2;
+                            drawDndRowIcon(g, DND_ROW_ICON_X, dndIconY, alpha);
+                        }
+                        // 有月亮图标时名字整体右移，可用宽度相应扣掉「图标宽 + 间距」——
+                        // 不扣的话名字/省略号会压到图标上。
+                        int rowNameX = dndRow ? DND_ROW_ICON_X + DND_ROW_ICON + DND_ROW_ICON_GAP : nameX;
+
                         int tipW = ChatMessageStore.hasUnreadWhisper(name) ? 16 : 0;
-                        int maxNameW = SIDEBAR_W - nameX - 4 - tipW - 2;
-                        String displayName = textRenderer.trimToWidth(name, maxNameW - textRenderer.getWidth("..."));
-                        if (!displayName.equals(name)) displayName += "...";
-                        g.drawText(textRenderer, displayName, nameX, scrollY + 1, c().textPrimary(), false);
+                        int maxNameW = SIDEBAR_W - rowNameX - 4 - tipW - 2;
+                        g.drawText(textRenderer, ellipsize(name, maxNameW), rowNameX, scrollY + 1, c().textPrimary(), false);
 
                         ChatMessageStore.ChatMessage latest = ChatMessageStore.getLatestWhisperWith(name);
                         if (latest != null) {
                             String preview = ChatMessageStore.singleLine(latest.content().getString());
-                            String previewDisplay = textRenderer.trimToWidth(preview, maxNameW - textRenderer.getWidth("..."));
-                            if (!previewDisplay.equals(preview)) previewDisplay += "...";
-                            g.drawText(textRenderer, previewDisplay, nameX, scrollY + 1 + textRenderer.fontHeight, c().textMuted(), false);
+                            g.drawText(textRenderer, ellipsize(preview, maxNameW), rowNameX,
+                                scrollY + 1 + textRenderer.fontHeight, c().textMuted(), false);
                         }
 
                         if (ChatMessageStore.hasUnreadWhisper(name)) {
@@ -566,6 +622,102 @@ public class ChatBubbleScreen extends ChatScreen {
                 g.disableScissor();
             }
         }
+
+        // 底部状态行：在线人数 / 单人游戏。放在侧边栏最底部那一行 —— 与右侧聊天
+        // 输入栏同一段 y（底部输入栏高 BAR_H，文字在其中垂直居中），列表紧贴其上方；
+        // 列表的 scissor 到 sidebarListBottom()（= 状态行上方 SIDEBAR_STATUS_PAD px）就结束，
+        // 状态行画在它下面，所以不随玩家列表滚动，玩家列表为空 / 搜索无结果时也照常显示。
+        // 在线人数取 TAB 列表口径（getPlayerList()，含自己）。
+        String statusText;
+        if (client.isInSingleplayer()) {
+            statusText = "【单人游戏中】";
+        } else {
+            int online = (client.player != null && client.player.networkHandler != null)
+                ? client.player.networkHandler.getPlayerList().size() : 0;
+            statusText = "【在线" + online + "人】";
+        }
+        // 侧边栏有淡入淡出：文字色必须走 alphaBlend 归一化 alpha，
+        // 否则 1.21.11 的 drawText 在 alpha==0 时直接不画（裸色值也会丢掉淡入效果）。
+        // 水平居中：renderSidebar 是在 g.getMatrices().translate(sidebarOffset, 0) 之后
+        // 调用的，所以这里的 x 已经是「侧边栏本地坐标」——不要再加 sidebarOffset，
+        // 加了开合/滑入时文字会整体偏出去（淡出态更是直接飞出可视区）。
+        // 度量与绘制用同一个 Text 实例，居中基准取扣掉右侧 1px 分隔线后的内容宽度；
+        // 再给左边缘留 2px 兜底，避免某些字体下量出来的宽度偏大时文字贴到左边。
+        Text statusLabel = Text.literal(statusText);
+        int statusW = textRenderer.getWidth(statusLabel);
+        int statusX = Math.max(2, (SIDEBAR_W - 1 - statusW) / 2);
+        g.drawText(textRenderer, statusLabel, statusX,
+            sidebarStatusY(), ChatBubbleTheme.alphaBlend(SIDEBAR_STATUS_COLOR, (int) (255 * alpha)), false);
+    }
+
+    /** 侧边栏底部状态行文字与玩家列表底部之间留出的空白（列表 scissor / 点击命中 / 滚动夹紧
+     *  都以 sidebarListBottom() 为界，这里就是那段间隙）。
+     *  取 2：只留一条视觉缝。以前是 20——那 20px 空带完全落在状态行上方，它的上沿比右侧
+     *  输入框（可见底边 = barTop + INPUT_BOX_OUTSET）还高，侧边栏底部看起来比输入区"多出一块"，
+     *  左右不持平。列表底部因此下移到状态行正上方（barTop 附近），与右侧输入框同一段收口。 */
+    private static final int SIDEBAR_STATUS_PAD = 2;
+
+    /** 侧边栏底部状态行文字的顶部 Y：文字**垂直中心**对齐底部输入框（含 -2px 外扩
+     *  描边的那块可见矩形）的垂直中心，即 statusY = inputBoxCenterY - fontHeight/2。
+     *  几何全部取自 inputBarY()/inputBarH()/INPUT_BOX_OUTSET 这一份数值，
+     *  不再单独用 BAR_H 估一遍——以前用 (BAR_H - fontHeight)/2 会比输入框高出 1px，
+     *  看起来"文字偏上、下面多一小条空白"。 */
+    private int sidebarStatusY() {
+        return inputBoxCenterY() - textRenderer.fontHeight / 2;
+    }
+
+    /** 侧边栏玩家列表可用区的底部 Y：到状态行文字顶部再往上留 {@link #SIDEBAR_STATUS_PAD}px
+     *  为止（状态行与列表之间那条 2px 的缝）。
+     *  绘制 / 点击命中 / 滚动夹紧共用这一个值：不留的话列表会画到状态行上、
+     *  scissor 也会把状态行一起裁掉，点状态行还可能命中最后一行玩家。 */
+    private int sidebarListBottom() {
+        return Math.max(SIDEBAR_LIST_TOP, sidebarStatusY() - SIDEBAR_STATUS_PAD);
+    }
+
+    /** 侧边栏玩家列表可见区高度（底部到状态行正上方、再扣掉顶部搜索/世界频道那一段，
+     *  与 renderSidebar 里的 visibleBottom 同源）。 */
+    private int sidebarListViewH() {
+        return Math.max(0, sidebarListBottom() - SIDEBAR_LIST_TOP);
+    }
+
+    /** 按当前搜索词 + 隐藏规则重新数一遍玩家行数。刻意不复用上一帧渲染的 totalH：
+     *  点行/清空搜索框时列表内容已经变了，旧值不可信。 */
+    private int sidebarVisibleRows() {
+        if (client == null || client.player == null || client.player.networkHandler == null) return 0;
+        String selfName = client.player.getName().getString();
+        String filter = sidebarSearchBox != null ? sidebarSearchBox.getText().toLowerCase().trim() : "";
+        int rows = 0;
+        for (var info : client.player.networkHandler.getPlayerList()) {
+            String name = info.getProfile().name();
+            if (name.equals(selfName)) continue;
+            if (!filter.isEmpty() && !name.toLowerCase().contains(filter)) continue;
+            if (ChatBubbleClientSetup.config().isSidebarHidden(name)) continue;
+            rows++;
+        }
+        return rows;
+    }
+
+    /** 把侧边栏滚动偏移夹进 [0, 当前上限]。
+     *  列表是每帧按玩家列表/搜索词/隐藏规则重建的，行数随时可能变少（有人下线、过滤词
+     *  变化、切换会话时清空搜索框、隐藏规则变更）。offset 一旦停在越界值，首行就会被
+     *  画到可见区上方并被 scissor 裁掉半截，看起来像"列表自己滚到了中间"。因此凡是
+     *  可能改变行数的地方都夹一次，不只依赖 render 里的那一处。 */
+    private void clampSidebarScroll() {
+        int totalH = sidebarVisibleRows() * (SIDEBAR_ITEM_H + 2);
+        sidebarMaxScroll = Math.max(0, totalH - sidebarListViewH());
+        if (sidebarScrollOffset < 0) sidebarScrollOffset = 0;
+        if (sidebarScrollOffset > sidebarMaxScroll) sidebarScrollOffset = sidebarMaxScroll;
+    }
+
+    /** 按像素宽度截断并补 "..."（项目里原有 trimToWidth + "..." 写法抽成一处）。
+     *  放得下就原样返回（不无脑加省略号）；连 "..." 都放不下时只做硬截断。 */
+    private String ellipsize(String text, int maxWidth) {
+        if (text == null || text.isEmpty()) return "";
+        if (maxWidth <= 0) return "";
+        int ellipsisW = textRenderer.getWidth("...");
+        if (maxWidth <= ellipsisW) return textRenderer.trimToWidth(text, maxWidth);
+        String trimmed = textRenderer.trimToWidth(text, maxWidth - ellipsisW);
+        return trimmed.equals(text) ? text : trimmed + "...";
     }
 
     private void insertMention(String name) {
@@ -771,14 +923,28 @@ private float getBarAlpha() {
         int modifiers = input.modifiers();
         // Ctrl+C with a message-text selection copies the selected runs (one per
         // selected span, joined with '\n') and reuses the existing "copied" toast.
-        // 焦点在输入框时必须让给输入框（复制输入框内选中的文本），否则输入框 ?Ctrl+C 会被这里吞掉
-if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_C && (modifiers & 0x2) != 0
-                && !chatField.isFocused() && textSelection.hasSelection()) {
+        // 输入框自己有选区时让给输入框（复制输入框内选中的文本），否则复制消息选区。
+        // 原判断是「输入框没聚焦」，可本屏 init 里就 setFocused(chatField)，于是选中消息
+        // 文本后 Ctrl+C 会被输入框那边吃掉 —— 系统消息没有气泡、只能靠选区复制，表现就是
+        // "能选中（有高亮）但复制不出来"。改成只看输入框有没有可复制的选区，
+        // 输入框里真的选中了文字时仍然优先复制输入框，原有行为不变。
+        boolean fieldCopiesFirst = chatField.isFocused() && !chatField.getSelectedText().isEmpty();
+        if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_C && (modifiers & 0x2) != 0
+                && !fieldCopiesFirst && textSelection.hasSelection()) {
             String copied = textSelection.copyText(textSpans);
+            if (copied.isEmpty()) {
+                // 兜底：选区没有落进任何 span（例如某条消息的行没注册 span）时，
+                // 复制选区起点那条消息的完整正文 —— 至少不会出现「明明选中了却什么都没复制」。
+                ChatMessageStore.ChatMessage anchor = ChatMessageStore.getMessageAt(textSelection.anchorMessage());
+                if (anchor != null && anchor.content() != null) copied = anchor.content().getString();
+            }
             if (!copied.isEmpty()) {
                 client.keyboard.setClipboard(copied);
                 copyToastTicks = 30;
             }
+            final String copyResult = copied;
+            ChatMessageStore.debugLog(() -> "[e33chat] COPY | spans=" + textSpans.size()
+                + " | chars=" + copyResult.length() + " | fieldFocused=" + chatField.isFocused());
             return true;
         }
         // Ctrl+V with an image in the clipboard uploads it and inserts the code;
@@ -899,6 +1065,8 @@ if (this.getFocused() != null && this.getFocused().keyPressed(input))
         }
         int sidebarX = getSidebarScreenX();
         if ((sidebarOpen || sidebarAnimating) && mouseX >= sidebarX && mouseX <= sidebarX + SIDEBAR_W) {
+            // 先用真实的当前行数刷新上限，避免拿上一帧的旧上限滚出越界偏移。
+            clampSidebarScroll();
             sidebarScrollOffset = MathHelper.clamp(sidebarScrollOffset - (int) (scrollY * 20), 0, sidebarMaxScroll);
             return true;
         }
@@ -957,22 +1125,31 @@ if (this.getFocused() != null && this.getFocused().keyPressed(input))
 
             int y2 = searchY + searchH + 3;
             if (mouseY >= y2 && mouseY <= y2 + SIDEBAR_ITEM_H) {
-                whisperPartner = null; sidebarSearchBox.setText(""); setFocused(chatField); scrollToBottom = true; return true;
+                whisperPartner = null; beginConversationSwitch(); setFocused(chatField); scrollToBottom = true; return true;
             }
             y2 += SIDEBAR_ITEM_H + 2;
+            // 命中测试必须用与绘制同一套夹紧后的偏移：列表行数变了以后旧 offset 可能越界，
+            // 不夹就会点到"看起来在别处"的那一行。
+            clampSidebarScroll();
             if (client.player != null && client.player.networkHandler != null) {
                 var players = new ArrayList<>(client.player.networkHandler.getPlayerList());
                 String selfName = client.player.getName().getString();
                 String filter = sidebarSearchBox.getText().toLowerCase().trim();
                 int scrollY = y2 - sidebarScrollOffset;
+                // 状态行所在的底部一条不参与行命中：列表被 scissor 在它上方截断后，
+                // 下半截被裁掉的那一行不该还能点中。
+                int listBottom = sidebarListBottom();
                 for (var info : players) {
                     String name = info.getProfile().name();
                     if (name.equals(selfName)) continue;
                     if (!filter.isEmpty() && !name.toLowerCase().contains(filter)) continue;
-                    if (mouseY >= scrollY && mouseY <= scrollY + SIDEBAR_ITEM_H) {
+                    // 与 renderSidebar 保持一致：被隐藏规则过滤掉的玩家不占行，
+                    // 否则点击行号会和可见行错位（点到别人、会话"跳转"到另一个人）。
+                    if (ChatBubbleClientSetup.config().isSidebarHidden(name)) continue;
+                    if (mouseY >= scrollY && mouseY <= scrollY + SIDEBAR_ITEM_H && mouseY < listBottom) {
                         whisperPartner = name;
                         ChatMessageStore.clearUnreadWhisper(name);
-                        sidebarSearchBox.setText(""); setFocused(chatField); scrollToBottom = true; return true;
+                        beginConversationSwitch(); setFocused(chatField); scrollToBottom = true; return true;
                     }
                     scrollY += SIDEBAR_ITEM_H + 2;
                 }
@@ -983,6 +1160,11 @@ if (this.getFocused() != null && this.getFocused().keyPressed(input))
         if (contextAvatarIndex >= 0) { contextAvatarIndex = -1; return true; }
         if (button == 0 && contextMsgIndex >= 0) { handleContextClick((int) mouseX, (int) mouseY); return true; }
         if (contextMsgIndex >= 0) { contextMsgIndex = -1; return true; }
+
+        // 免打扰月亮按钮只剩标题栏左上角那一个（汉堡右侧），按当前视图切换作用对象：
+        // 公屏视图 → 公屏 DND，私聊视图 → 该私聊对象的 DND（见 toggleDndForCurrentView）。
+        // 它的命中在下面「button == 0」段里判（与汉堡同一优先级段），这里不再单独处理
+        // 私聊标题条上的按钮——那个按钮已经删掉，滚动条命中优先级保持原样。
 
         // Notification bar clicks
         if (button == 0 && newMessageCount > 0) {
@@ -1024,6 +1206,7 @@ if (this.getFocused() != null && this.getFocused().keyPressed(input))
             return true;
 
         if (button == 0) {
+            if (isMouseOverDnd(mouseX, mouseY)) { toggleDndForCurrentView(); return true; }
             if (isMouseOverHamburger(mouseX, mouseY)) {
                 if (!ChatBubbleClientSetup.config().animationEnabled()) {
                     sidebarOpen = !sidebarOpen; sidebarAnimating = false;
@@ -1249,7 +1432,21 @@ boolean inputHandled = this.chatField.mouseClicked(click, doubleClick);
         if (cev instanceof ClickEvent.CopyToClipboard cc) {
             client.keyboard.setClipboard(cc.value()); return true;
         }
-        return true;
+        // 未识别的 ClickEvent 类型（1.21.11 的 ClickEvent.Custom / ShowDialog / ChangePage，
+        // 以及以后新增的类型）交回原版分发，不要再“吞掉但不执行”。
+        // 原版入口：Screen.handleClickEvent(ClickEvent, MinecraftClient, Screen)，1.21.11 起
+        // 由 Screen 统一分派（protected static，本类是 Screen 子类，可直接调用）：
+        //   RunCommand  → handleRunCommand(...)
+        //   ShowDialog  → player.networkHandler.showDialog(dialog, this)
+        //   Custom      → player.networkHandler.sendPacket(new CustomClickActionC2SPacket(id, payload))
+        //                 即原版的自定义载荷通道，插件服自带的「点击打开签到菜单」走的就是它
+        //   其余（ChangePage 等）→ handleBasicClickEvent(...)
+        // 注：handleClickEvent 第一句就是 requireNonNull(mc.player)，所以先确认玩家存在。
+        if (client.player != null) {
+            Screen.handleClickEvent(cev, client, this);
+            return true;
+        }
+        return false;
     }
 
     @Override
@@ -1434,8 +1631,22 @@ boolean selDrag = textSelection.isDragActive();
 
 
 
+    /** 消息右键菜单的条目数：系统消息只给「复制」（引用对系统消息没有意义），
+     *  玩家消息维持「复制 + 引用」两项。 */
+    private int contextMenuItemCount() {
+        ChatMessageStore.ChatMessage msg = ChatMessageStore.getMessageAt(contextMsgIndex);
+        return msg != null && msg.isSystem() ? 1 : 2;
+    }
+
+    /** 消息右键菜单的高度：按实际条目数算（1 项 = 一行 + 2px 边距，2 项 = 两行 + 2px），
+     *  绘制与点击命中共用，避免菜单"看起来少一行、点上去却按两行算"的错位。 */
+    private int contextMenuHeight() {
+        return CTX_ITEM_H * contextMenuItemCount() + 2;
+    }
+
     private void handleContextClick(int mx, int my) {
-        int menuH = CTX_ITEM_H * 2 + 2;
+        int items = contextMenuItemCount();
+        int menuH = contextMenuHeight();
         int menuX = Math.min(contextX, panelX + panelW - CTX_W - 2);
         int menuY = contextY - menuH;
         if (menuY < msgTop) menuY = contextY + 4;
@@ -1443,7 +1654,7 @@ boolean selDrag = textSelection.isDragActive();
             if (my >= menuY && my <= menuY + CTX_ITEM_H) {
                 ChatMessageStore.ChatMessage msg = ChatMessageStore.getMessageAt(contextMsgIndex);
                 if (msg != null) { client.keyboard.setClipboard(msg.content().getString()); copyToastTicks = 30; }
-            } else if (my >= menuY + CTX_ITEM_H + 1 && my <= menuY + CTX_ITEM_H * 2 + 1) {
+            } else if (items > 1 && my >= menuY + CTX_ITEM_H + 1 && my <= menuY + CTX_ITEM_H * 2 + 1) {
                 replyTargetIndex = contextMsgIndex;
             }
         }
@@ -1464,7 +1675,7 @@ boolean selDrag = textSelection.isDragActive();
             } else if (my >= menuY + CTX_ITEM_H + 2 && my <= menuY + CTX_ITEM_H * 2 + 2) {
                 whisperPartner = name;
                 ChatMessageStore.clearUnreadWhisper(name);
-                if (sidebarSearchBox != null) sidebarSearchBox.setText("");
+                beginConversationSwitch();
                 setFocused(chatField); scrollToBottom = true;
             } else if (my >= menuY + CTX_ITEM_H * 2 + 4 && my <= menuY + menuH) {
                 toggleBlockedPlayer();
@@ -1561,6 +1772,8 @@ boolean selDrag = textSelection.isDragActive();
         if (searchPanel.visible && searchInput != null) searchInput.render(g, mouseX, mouseY, delta);
         g.getMatrices().popMatrix();
 
+        // 免打扰按钮 tooltip 画在弹层之后（最高一层），避免被消息区/弹层盖住
+
         g.getMatrices().popMatrix();
 
         if (sidebarOpen || sidebarAnimating) {
@@ -1617,6 +1830,13 @@ boolean selDrag = textSelection.isDragActive();
         if (hoverMenu) ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.HOVER_BG), menuX - 1, menuY - 1, ICON_S + 2, ICON_S + 2, panelAlpha);
         drawTextureIconAlpha(g, iconTex("menu"), menuX, menuY, ICON_S, getAnimProgress());
 
+        // 免打扰（DND）按钮：汉堡右侧，与齿轮按钮同尺寸的圆角按钮，启用态为紫色高亮底。
+        // 全屏只有这一个月亮按钮，作用对象跟随当前视图（公屏 / 当前私聊对象），
+        // 高亮也反映「当前作用对象」的状态——见 dndActiveForCurrentView()。
+        drawDndButton(g, iconTex("dnd"), dndButtonX(), dndButtonY(), ICON_S - 1,
+            getAnimProgress(), isMouseOverDnd(mouseX, mouseY),
+            dndActiveForCurrentView());
+
         String title = getDisplayTitle();
         int titleW = textRenderer.getWidth(title);
         int titleX = UiLayout.centerX(panelX, panelW, titleW);
@@ -1642,6 +1862,151 @@ boolean selDrag = textSelection.isDragActive();
         return mx >= menuX && mx <= menuX + ICON_S && my >= menuY && my <= menuY + ICON_S;
     }
 
+    // ==== 免打扰（DND）按钮 ====
+    // 尺寸与底部栏设置（齿轮）按钮完全一致：齿轮用 drawIconButton(..., ICON_S - 1, ...)，
+    // 图标 13x13 + 外圈 1px 描边 → 15x15 圆角框（半径 6/5，与本屏其它图标按钮同一套圆角）。
+    //
+    // 全屏只有这一颗月亮按钮（标题栏、汉堡右侧）。它没有固定语义，而是**按当前视图切换作用对象**：
+    //   公屏视图（whisperPartner == null）  → 公屏/系统免打扰（dndEnabled）
+    //   私聊视图（whisperPartner != null）  → 当前私聊对象的免打扰（isWhisperDnd(name)）
+    // 高亮、点击、系统回执全部走这一对判定，避免"按钮亮的状态和它改的对象不是同一个"。
+    // （私聊标题条右侧原来那颗只作用于本私聊的月亮按钮已删除——同一个开关没必要放两处。）
+
+    /** 免打扰月亮图标的「白色剪影」贴图。
+     *  dnd.png 在 dark/ 下是纯白 (255,255,255) + alpha 形状，在 light/ 下是深棕 (71,25,0)。
+     *  GUI 纹理着色是**乘法**（纹理色 × tint）：白 × 紫 = 准确的紫；深棕 × 紫 ≈ 近黑，
+     *  根本读不出"紫"。所以凡是需要染色的场合（玩家行的紫月亮、启用态按钮上的浅色图标）
+     *  都取这张白色剪影，**贴图文件本身一个字节都不改**。 */
+    private static Identifier dndMaskTex() {
+        return Identifier.of("e33chat", "textures/gui/dark/dnd.png");
+    }
+
+    /** 玩家列表行里的「该玩家私聊免打扰」紫月亮：没有圆角底，就是纯图标；
+     *  颜色随主题（dark 亮紫 / light 蓝紫），透明度跟随侧边栏淡入淡出。 */
+    private void drawDndRowIcon(DrawContext g, int x, int y, float alpha) {
+        int a = (int) (255 * alpha);
+        if (a <= 1) return;
+        drawTintedIcon(g, dndMaskTex(), x, y, DND_ROW_ICON,
+            ChatBubbleTheme.alphaBlend(theme().dndAccent(), a));
+    }
+
+    /** 免打扰按钮左上角 X：紧跟汉堡按钮右侧（汉堡起于 panelX+3、宽 ICON_S，再留 4px 间隙）。 */
+    private int dndButtonX() { return panelX + 3 + ICON_S + 4; }
+
+    /** 免打扰按钮左上角 Y：与汉堡按钮同一条基线（TITLE_H 内居中 ICON_S）。 */
+    private int dndButtonY() { return titleY + (TITLE_H - ICON_S) / 2; }
+
+    private boolean isMouseOverDnd(double mx, double my) {
+        int bx = dndButtonX() - 1, by = dndButtonY() - 1;
+        int s = ICON_S - 1 + 2;   // 图标尺寸（= 齿轮）+ 两侧各 1px 描边
+        return mx >= bx && mx <= bx + s && my >= by && my <= by + s;
+    }
+
+    /** 当前视图下免打扰是否已开启：公屏视图看公屏开关，私聊视图看「这个对象」的开关。
+     *  按钮高亮与点击分流共用它，保证画的亮态就是点下去会改的那个对象。 */
+    private boolean dndActiveForCurrentView() {
+        String partner = whisperPartner;
+        return partner == null
+            ? ChatBubbleClientSetup.config().dndEnabled()
+            : ChatBubbleClientSetup.config().isWhisperDnd(partner);
+    }
+
+    /** 点击分流：按当前视图把这次切换派给「公屏」或「当前私聊对象」。
+     *  两边的系统回执分别在 togglePublicDnd / toggleWhisperDnd 里插入，文案与作用对象一致。 */
+    private void toggleDndForCurrentView() {
+        if (whisperPartner == null) togglePublicDnd();
+        else toggleWhisperDnd();
+    }
+
+    /** 免打扰按钮：与 drawIconButton 同尺寸/同圆角/同描边。
+     *  - **启用态**：整块换成紫色（描边 = 主题免打扰紫，内层 = 深一档的紫填充），图标改用
+     *    白色剪影（浅色主题的深棕月亮压在紫底上会糊掉）。紫色与选中行的强调色刻意不同，
+     *    "我静音了" 与 "我正看着这条会话" 不会混。
+     *  - **未启用态**：与其它图标按钮完全一致（textMuted 描边 + inputBg 内层 + 悬停 popupHover）。 */
+    private void drawDndButton(DrawContext g, Identifier tex, int x, int y, int size,
+                               float alpha, boolean hover, boolean active) {
+        int a255 = (int) (255 * alpha);
+        int pad = 1;
+        int bx = x - pad, by = y - pad, bw = size + pad * 2, bh = size + pad * 2;
+        if (bw <= 0 || bh <= 0) return;
+        ChatBubbleTheme th = theme();
+        int purpleBorder = th.dndAccent();
+        int purpleFill = th.dndFill();
+        int border = ChatBubbleTheme.alphaBlend(active ? purpleBorder : c().textMuted(), a255);
+        int bg = ChatBubbleTheme.alphaBlend(active ? purpleFill : c().inputBg(), a255);
+        // 圆角描边环：描边色圆角底 + 内缩 1px 的背景色圆角（与设置/表情/发送按钮同构）
+        RoundRectRenderer.fill(g, bx, by, bx + bw, by + bh, 6f, border);
+        RoundRectRenderer.fill(g, bx + 1, by + 1, bx + bw - 1, by + bh - 1, 5f, bg);
+        if (hover) {
+            // 启用态的 hover 用一层 27% 的白提亮（紫底不会被浅色 popupHover 洗掉）；
+            // 未启用态照旧用 popupHover，与其它按钮的悬停观感一致。
+            int hoverColor = active
+                ? ChatBubbleTheme.alphaBlend(0xFFFFFFFF, (int) (0x44 * alpha))
+                : ChatBubbleTheme.alphaBlend(c().popupHover(), a255);
+            RoundRectRenderer.fill(g, bx, by, bx + bw, by + bh, 6f, hoverColor);
+        }
+        if (active) {
+            drawTintedIcon(g, dndMaskTex(), x, y, size, ChatBubbleTheme.alphaBlend(0xFFFFFFFF, a255));
+        } else {
+            drawTextureIconAlpha(g, tex, x, y, size, alpha);
+        }
+    }
+
+    /** 切换**公屏/系统**免打扰：写回配置（持久化）+ 往消息列表插一条系统回执。
+     *  只在公屏视图下由 toggleDndForCurrentView 派发到这里；私聊是否免打扰由每个对话对象
+     *  自己的开关决定（同一个月亮按钮在私聊视图下会派到 toggleWhisperDnd）。
+     *  @提及/引用不受任何免打扰影响。 */
+    private void togglePublicDnd() {
+        boolean next = !ChatBubbleClientSetup.config().dndEnabled();
+        ChatBubbleClientSetup.saveConfig(ChatBubbleClientSetup.config().withDndEnabled(next));
+        ChatMessageStore.addLocalNotice(
+            Text.translatable(next ? "e33chat.dnd.on" : "e33chat.dnd.off"), whisperPartner);
+        scrollToBottom = true;
+        ChatMessageStore.debugLog(() -> "[e33chat] Public DND toggled | enabled=" + next
+            + " | whisperView=" + whisperPartner);
+    }
+
+    // ==== 私聊免打扰（按会话独立）的切换逻辑 ====
+    // 这里不再有独立的按钮/命中区域：标题栏那颗月亮按钮在私聊视图下就是「本私聊」的开关
+    // （见 toggleDndForCurrentView），所以只保留切换动作本身。
+
+    /** 切换「当前私聊对象」的免打扰：写回配置（持久化）+ 在这条私聊里插一条系统回执。
+     *  只影响这一个私聊：它的横幅与提示音静默，公屏/别的私聊不受影响；
+     *  @提及/引用照旧穿透。 */
+    private void toggleWhisperDnd() {
+        if (whisperPartner == null) return;
+        final String partner = whisperPartner;
+        boolean next = !ChatBubbleClientSetup.config().isWhisperDnd(partner);
+        ChatBubbleClientSetup.saveConfig(ChatBubbleClientSetup.config().withWhisperDnd(partner, next));
+        ChatMessageStore.addLocalNotice(
+            Text.translatable(next ? "e33chat.dnd.whisper.on" : "e33chat.dnd.whisper.off", partner), partner);
+        scrollToBottom = true;
+        ChatMessageStore.debugLog(() -> "[e33chat] Whisper DND toggled | partner=" + partner
+            + " | enabled=" + next);
+    }
+
+
+
+    /** 切换私聊/公共频道的统一收尾：搜索框只在真有内容时清空 + 下一帧直接落到新会话底部。
+     *  注意 TextFieldWidget.setText 不比较新旧文本、永远回调 changedListener，
+     *  而侧边栏搜索框的监听器会把 sidebarScrollOffset 归零 —— 于是"点一下玩家行、
+     *  玩家列表瞬间跳回顶部"。这里先判空，避免那次无意义的归零。 */
+    private void beginConversationSwitch() {
+        boolean clearedFilter = false;
+        if (sidebarSearchBox != null && !sidebarSearchBox.getText().isEmpty()) {
+            sidebarSearchBox.setText("");
+            clearedFilter = true;
+        }
+        // 真的清掉了过滤词 → 玩家行从"过滤后的 N 行"突增成"全部"，旧偏移对新列表没有
+        // 意义：显式归零（不依赖 changedListener 的副作用），否则列表会停在中段、
+        // 首行被 scissor 裁掉半截。
+        if (clearedFilter) sidebarScrollOffset = 0;
+        // 没清过滤词时列表内容不变，只做夹紧：人数/可见高度可能已经变了，别留着越界偏移。
+        clampSidebarScroll();
+        scrollSnapPending = true;
+        scrollAnimActive = false;
+    }
+
     private void renderMessages(DrawContext g, int mouseX, int mouseY) {
         msgHeightCache.clear();
         int imgVersion = ImageLoader.version();
@@ -1659,16 +2024,28 @@ boolean selDrag = textSelection.isDragActive();
         } else {
             messages = ChatMessageStore.getPublicMessages();
         }
-        if (messages.isEmpty()) return;
-
+        // 私聊标题条先画：不能放在下面「空会话直接 return」之后，否则刚点开一个还没有
+        // 聊天记录的玩家时整条标题条消失。（原来这里还画一个「本私聊免打扰」月亮按钮，
+        // 现在已统一到标题栏那颗按视图切换的月亮按钮上，标题条只剩居中文字。）
         int indicatorH = 0;
         if (whisperPartner != null) {
-            indicatorH = 14;
+            indicatorH = WHISPER_BAR_H;
             int indY = msgTop;
             ColoredTextureRenderer.drawWithAlpha(g, UiTextureManager.rl(UiElement.WHISPER_BAR), panelX, indY, panelW, indicatorH, getAnimProgress());
-            String modeText = Text.translatable("e33chat.whisper.mode").getString() + ": " + whisperPartner;
+            // 标题条右侧不再有按钮：居中文字只留左右各 8px 内边距，名字过长时按面板宽省略。
+            int modeMaxW = Math.max(20, panelW - 2 * 8);
+            String modeLabel = Text.translatable("e33chat.whisper.mode").getString() + ": " + whisperPartner;
+            String modeText = ellipsize(modeLabel, modeMaxW);
             int modeTW = textRenderer.getWidth(modeText);
             g.drawText(textRenderer, modeText, panelX + (panelW - modeTW) / 2, indY + 2, c().textPrimary(), false);
+        }
+
+        if (messages.isEmpty()) {
+            // 空会话没有可滚动内容：丢弃这一次吸附请求，并把上一会话的滚动状态归零，
+            // 免得 maxScroll/scrollOffset 停留在旧会话的值上。
+            scrollSnapPending = false;
+            scrollOffset = 0; maxScroll = 0; scrollToBottom = false; scrollAnimActive = false;
+            return;
         }
 
         int effectiveMsgTop = msgTop + indicatorH;
@@ -1720,8 +2097,9 @@ boolean selDrag = textSelection.isDragActive();
             lastSeenMessageCount = currentMsgCount;
         }
 
-        if (firstRender) {
+        if (firstRender || scrollSnapPending) {
             scrollOffset = maxScroll; scrollToBottom = false; firstRender = false; scrollAnimActive = false;
+            scrollSnapPending = false;
         } else if (scrollAnimActive) {
             float t = Animation.progress(scrollAnimStart, scrollAnimDuration, false);
             scrollOffset = Math.round(scrollAnimFrom + (scrollAnimTo - scrollAnimFrom) * t);
@@ -1997,11 +2375,19 @@ boolean showAvatar = !(ChatBubbleClientSetup.config().hideRepeatedAvatars() != n
             int yy = baseY + 2;
             Style fb = findRootClickStyle(msg.content());
             int sysColor = ChatBubbleTheme.alphaBlend(c().textMuted(), (int)(255 * alpha));
+            // 系统消息没有气泡，但同样要能被右键（右键菜单对系统消息只给「复制」）：
+            // 补一条与玩家气泡同一套的命中矩形（第 5 项是全量列表下标）。左键的两个
+            // 命中循环（头像 @ / 头像菜单）都会先跳过 isSystem，所以不会被这条矩形影响。
+            bubbleRects.add(new int[]{panelX + PAD, baseY, panelW - PAD * 2,
+                lines.size() * textRenderer.fontHeight + 4, index});
             int sysLi = 0;
             for (var line : lines) {
                 int lw = textRenderer.getWidth(line);
+                // 每一行都注册成可选中的 span（KIND_SYSTEM）：Ctrl+C 走的是
+                // ChatTextSelection.copyText(textSpans)，没有 span 就永远复制不出来。
+                // 系统消息居中、坐标已是屏幕空间，不需要矩阵回填。
                 renderLineWithClicks(g, line, panelX + (panelW - lw) / 2, yy, sysColor, fb,
-                    index, sysLi, TextSpan.KIND_CONTENT, 1f);
+                    index, sysLi, TextSpan.KIND_SYSTEM, 1f);
                 yy += textRenderer.fontHeight;
                 sysLi++;
             }
@@ -2590,7 +2976,8 @@ boolean showAvatar = !(ChatBubbleClientSetup.config().hideRepeatedAvatars() != n
 
     private void renderContextMenu(DrawContext g, int mouseX, int mouseY) {
         if (contextMsgIndex < 0) return;
-        int menuH = CTX_ITEM_H * 2 + 2;
+        int items = contextMenuItemCount();
+        int menuH = contextMenuHeight();
         int menuX = Math.min(contextX, panelX + panelW - CTX_W - 2);
         int menuY = contextY - menuH;
         if (menuY < msgTop) menuY = contextY + 4;
@@ -2617,13 +3004,17 @@ boolean hoverCopy = mouseX >= menuX && mouseX <= menuX + CTX_W
         drawTextureIconAlpha(g, iconTex("copy"), menuX + 5, menuY + 3, 12, alpha);
         g.drawText(textRenderer, Text.translatable("e33chat.context.copy").getString(), menuX + 22, menuY + 4, c().textPrimary(), false);
 
-        boolean hoverQuote = mouseX >= menuX && mouseX <= menuX + CTX_W
-            && mouseY >= menuY + CTX_ITEM_H + 1 && mouseY <= menuY + menuH;
-        RoundRectRenderer.fill(g, menuX + 1, menuY + CTX_ITEM_H + 1, menuX + CTX_W - 1, menuY + CTX_ITEM_H * 2 + 1,
-            CTX_ITEM_RADIUS,
-            ChatBubbleTheme.alphaBlend(base.contextHover(), hoverQuote ? a255 : 0));
-        drawTextureIconAlpha(g, iconTex("quote"), menuX + 5, menuY + CTX_ITEM_H + 3, 12, alpha);
-        g.drawText(textRenderer, Text.translatable("e33chat.context.quote").getString(), menuX + 22, menuY + CTX_ITEM_H + 5, c().textPrimary(), false);
+        // 系统消息只画「复制」这一项（items == 1）：引用对系统消息没有意义，
+        // 菜单高度已按实际条目数算，所以这里直接不画第二行、也不留空位。
+        if (items > 1) {
+            boolean hoverQuote = mouseX >= menuX && mouseX <= menuX + CTX_W
+                && mouseY >= menuY + CTX_ITEM_H + 1 && mouseY <= menuY + menuH;
+            RoundRectRenderer.fill(g, menuX + 1, menuY + CTX_ITEM_H + 1, menuX + CTX_W - 1, menuY + CTX_ITEM_H * 2 + 1,
+                CTX_ITEM_RADIUS,
+                ChatBubbleTheme.alphaBlend(base.contextHover(), hoverQuote ? a255 : 0));
+            drawTextureIconAlpha(g, iconTex("quote"), menuX + 5, menuY + CTX_ITEM_H + 3, 12, alpha);
+            g.drawText(textRenderer, Text.translatable("e33chat.context.quote").getString(), menuX + 22, menuY + CTX_ITEM_H + 5, c().textPrimary(), false);
+        }
     }
 
     private void renderAvatarContextMenu(DrawContext g, int mouseX, int mouseY) {
@@ -2846,17 +3237,22 @@ boolean hoverCopy = mouseX >= menuX && mouseX <= menuX + CTX_W
         int iconY = barTop + (BAR_H - ICON_S) / 2;
 
         int ibX = inputX;
-        int ibY = inputY;
+        int ibY = inputBarY();
         int ibW = chatField.getWidth();
-        int ibH = INPUT_H;
-        // Rounded input box with a subtle border (larger radius so the rounding is clearly visible).
+        int ibH = inputBarH();
+        // Rounded input box with a subtle border. Radius uses the same set as the
+        // bottom-bar icon buttons (drawIconButton: outer ring 6f + 1px inset 5f) so the
+        // input looks like the other buttons; the box is taller but the visual corner
+        // radius must NOT scale with the height (was 8f/9f — visibly rounder than the buttons).
         int inputBg = ChatBubbleTheme.alphaBlend(c().inputBg(), a255);
-        RoundRectRenderer.fill(g, ibX - 2, ibY - 2, ibX + ibW + 2, ibY + ibH + 2, 8f, inputBg);
+        RoundRectRenderer.fill(g, ibX - INPUT_BOX_OUTSET, ibY - INPUT_BOX_OUTSET,
+            ibX + ibW + INPUT_BOX_OUTSET, ibY + ibH + INPUT_BOX_OUTSET, 6f, inputBg);
         boolean hoverInput = mouseX >= ibX - 1 && mouseX <= ibX + ibW && mouseY >= ibY && mouseY <= ibY + ibH;
         if (hoverInput || chatField.isFocused()) {
             int bcol = ChatBubbleTheme.alphaBlend(c().textMuted(), a255);
-            RoundRectRenderer.fill(g, ibX - 2, ibY - 2, ibX + ibW + 2, ibY + ibH + 2, 9f, bcol);
-            RoundRectRenderer.fill(g, ibX - 1, ibY - 1, ibX + ibW + 1, ibY + ibH + 1, 8f, inputBg);
+            RoundRectRenderer.fill(g, ibX - INPUT_BOX_OUTSET, ibY - INPUT_BOX_OUTSET,
+                ibX + ibW + INPUT_BOX_OUTSET, ibY + ibH + INPUT_BOX_OUTSET, 6f, bcol);
+            RoundRectRenderer.fill(g, ibX - 1, ibY - 1, ibX + ibW + 1, ibY + ibH + 1, 5f, inputBg);
         }
 
         int gearX = panelX + 4;
@@ -2906,6 +3302,18 @@ boolean hoverCopy = mouseX >= menuX && mouseX <= menuX + CTX_W
             ColoredTextureRenderer.drawWithAlpha(g, tex, x, y, size, size, 1f, 1f, 14, 14, 16, 16, alpha);
         } else {
             ColoredTextureRenderer.drawWithAlpha(g, tex, x, y, size, size, 0f, 0f, size, size, size, size, alpha);
+        }
+    }
+
+    /** 带 tint 的图标绘制：采样语义与 {@link #drawTextureIconAlpha} 完全一致（size<16 时
+     *  裁掉 1px 边、从 14x14 区域缩放），颜色改成 **纹理色 × argb**（GUI_TEXTURED 顶点色调制）。
+     *  只对白色剪影贴图有意义：白 × 紫 = 紫；深色贴图乘紫会发黑，所以染色前要先选对贴图。 */
+    public static void drawTintedIcon(DrawContext g, Identifier tex, int x, int y, int size, int argb) {
+        if (((argb >>> 24) & 0xFF) <= 1) return;
+        if (size < 16) {
+            ColoredTextureRenderer.drawTinted(g, tex, x, y, size, size, 1f, 1f, 14, 14, 16, 16, argb);
+        } else {
+            ColoredTextureRenderer.drawTinted(g, tex, x, y, size, size, 0f, 0f, size, size, size, size, argb);
         }
     }
 

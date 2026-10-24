@@ -687,7 +687,7 @@ class ChatMessageStoreTest {
         ChatMessageStore.setMessageEffectObserver(new ChatMessageStore.MessageEffectObserver() {
             @Override public void onSystemMessage(net.minecraft.text.Text content, int index) { calls[0]++; }
             @Override public void onMentionOrQuote(net.minecraft.text.Text content, ChatMessageStore.SenderMeta meta, int index, String replySender) {}
-            @Override public void onWhisperReceived(java.util.UUID senderUUID, net.minecraft.text.Text senderName, net.minecraft.text.Text content, int index) {}
+            @Override public void onWhisperReceived(java.util.UUID senderUUID, net.minecraft.text.Text senderName, net.minecraft.text.Text content, int index, String partnerName) {}
             @Override public void onPublicChatSound() {}
             @Override public void onQuoteSound() {}
         });

@@ -1,5 +1,6 @@
 package com.niuqu.chatbubble.store;
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
+import com.niuqu.chatbubble.chat.notification.ChatMessageEffects;
 import com.niuqu.chatbubble.config.ChatBubbleConfig;
 
 import net.minecraft.util.Formatting;import net.minecraft.client.MinecraftClient;
@@ -19,7 +20,9 @@ public class ChatMessageStore {
     // 横幅/提示音由客户端注册的实现执行；测试环境默认 no-op，不依赖 Minecraft 单例。
     public interface MessageEffectObserver {
         void onMentionOrQuote(Text content, SenderMeta meta, int index, String replySender);
-        void onWhisperReceived(UUID senderUUID, Text senderName, Text content, int index);
+        /** partnerName = 这条私聊的对话对象（不是发送者自己），免打扰按它单独判定；
+         *  由 addMessage 的 whisperPartner 直接传下来，拿不到时才为 null。 */
+        void onWhisperReceived(UUID senderUUID, Text senderName, Text content, int index, String partnerName);
         void onSystemMessage(Text content, int index);
         void onPublicChatSound();
         void onQuoteSound();
@@ -27,7 +30,7 @@ public class ChatMessageStore {
 
     private static final MessageEffectObserver NOOP_OBSERVER = new MessageEffectObserver() {
         @Override public void onMentionOrQuote(Text content, SenderMeta meta, int index, String replySender) {}
-        @Override public void onWhisperReceived(UUID senderUUID, Text senderName, Text content, int index) {}
+        @Override public void onWhisperReceived(UUID senderUUID, Text senderName, Text content, int index, String partnerName) {}
         @Override public void onSystemMessage(Text content, int index) {}
         @Override public void onPublicChatSound() {}
         @Override public void onQuoteSound() {}
@@ -519,7 +522,7 @@ public class ChatMessageStore {
             && ChatBubbleClientSetup.config().mentionWhisperBanner()
             && (!localSend || ChatBubbleClientSetup.config().ownWhisperNotify())) {
             effectObserver.onWhisperReceived(
-                senderUUID, senderName, content, messages.size());
+                senderUUID, senderName, content, messages.size(), whisperPartner);
         }
 
         // System messages pop as a banner like @/whisper/quote (no sender name —
@@ -532,7 +535,16 @@ public class ChatMessageStore {
         if (!own && localPlayerSupplier.get() != null && !isMentionOrQuote && !whisper
             && (isSystem ? ChatBubbleClientSetup.config().soundSystem()
                          : ChatBubbleClientSetup.config().soundPublic())) {
-            effectObserver.onPublicChatSound();
+            // 公屏/系统提示音只跟「公屏免打扰」走（私聊声不在这里：它由
+            // MentionNotificationController.onWhisperReceived 按该私聊对象单独判定）。
+            // @提及/提及型引用（isMentionOrQuote）在上面就被排除了，走 mention 音效，
+            // 免打扰下照常响。
+            if (ChatMessageEffects.dndMutesNonMention()) {
+                debugLog(() -> "[e33chat] sound suppressed by DND（public） | kind="
+                    + (isSystem ? "system" : "public"));
+            } else {
+                effectObserver.onPublicChatSound();
+            }
         }
 
         if (!screenOpen) {
@@ -542,6 +554,25 @@ public class ChatMessageStore {
         if (whisper && whisperPartner != null && !own) {
             markWhisperUnread(whisperPartner);
         }
+        return created;
+    }
+
+    /** 本地系统提示（免打扰开关的回执等）：只插进消息列表，**不**走 addMessage 的副作用链
+     *  （不弹横幅、不发声、不计未读、不置 historyDirty）——否则「打开免打扰」这条提示自己
+     *  就会先弹一次横幅，正好与免打扰语义相反。whisperPartner 传入当前私聊对象时，提示会
+     *  落在私聊视图里（与调用时正在看的列表一致），null 则落在公共视图。 */
+    public static ChatMessage addLocalNotice(Text content, String whisperPartner) {
+        if (content == null || content.getString().isBlank()) return null;
+        boolean whisper = whisperPartner != null && !whisperPartner.isEmpty();
+        // 用 nil UUID 而不是 null：applyChatMeta / 历史回填等处会对 senderUUID() 直接
+        // 调用 .equals(...)，null 会 NPE；isSystem=true 保证不会被当成玩家消息处理。
+        ChatMessage created = new ChatMessage(
+            new UUID(0, 0), Text.empty(), content, System.currentTimeMillis(),
+            false, true, null, null, String.valueOf(content.getString().hashCode()), 1,
+            null, whisper, whisper ? whisperPartner : null, null);
+        messages.add(created);
+        while (messages.size() > MAX)
+            messages.remove(0);
         return created;
     }
 
@@ -600,6 +631,8 @@ public class ChatMessageStore {
     public static ChatMessage getLatestWhisperWith(String partnerName) {
         for (int i = messages.size() - 1; i >= 0; i--) {
             ChatMessage msg = messages.get(i);
+            // 系统提示（免打扰开关回执等）不是对方发来的消息，不能当私聊预览
+            if (msg.isSystem()) continue;
             if (msg.whisper() && partnerName.equals(msg.whisperPartner())) {
                 return msg;
             }

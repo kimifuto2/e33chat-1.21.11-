@@ -82,6 +82,11 @@ public final class ChatTextSelection {
       }
    }
 
+   /** 选区起点所在消息的下标（全量列表下标）：Ctrl+C 的兜底复制用它定位整条消息。 */
+   public int anchorMessage() {
+      return this.anchorMsg;
+   }
+
    private static long key(int msg, int line, int kind) {
       return msg * 100000L + kind * 10000L + line;
    }

@@ -6,6 +6,28 @@ public enum ChatBubbleTheme {
     DARK,
     LIGHT;
 
+    // ==== 免打扰（DND）紫 ====
+    // 免打扰语义的颜色是**紫色**，与强调色（accent，默认蓝）解耦：@提及/选中行仍走强调色，
+    // 只有"免打扰"这一族用紫，玩家眼睛就能把「谁被我静音了」和「当前选中谁」分开。
+    // 深/浅主题各取一档：
+    //   DND_PURPLE       0xFFB04CFF 亮紫——深色主题的图标/描边，在 0xFF1A1A1A 行底上极亮；
+    //   DND_PURPLE_LIGHT 0xFF8A2BE2 蓝紫——浅色主题的图标/描边，在米色 0xFFD8D5C2 上对比度 ~4.2。
+    // 按钮启用态的**填充**再深一档，让白色月亮图标压在上面仍清晰（深紫/中深紫）。
+    public static final int DND_PURPLE = 0xFFB04CFF;
+    public static final int DND_PURPLE_LIGHT = 0xFF8A2BE2;
+    public static final int DND_FILL_DARK = 0xFF4A1773;
+    public static final int DND_FILL_LIGHT = 0xFF6A22B8;
+
+    /** 当前主题的免打扰紫：图标染色与按钮描边用它（深色亮紫 / 浅色蓝紫）。 */
+    public int dndAccent() {
+        return this == LIGHT ? DND_PURPLE_LIGHT : DND_PURPLE;
+    }
+
+    /** 当前主题的免打扰按钮「启用态」内层填充紫（比 {@link #dndAccent()} 深一档）。 */
+    public int dndFill() {
+        return this == LIGHT ? DND_FILL_LIGHT : DND_FILL_DARK;
+    }
+
     /** 主题明暗模式：DARK=暗色，LIGHT=浅色。 */
     public enum ColorMode {
         DARK,

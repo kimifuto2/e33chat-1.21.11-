@@ -36,6 +36,18 @@ public final class ColoredTextureRenderer {
         g.drawTexture(RenderPipelines.GUI_TEXTURED, tex, x, y, 0f, 0f, w, h, w, h, argb);
     }
 
+    /** 带整体 tint 色 + UV 采样的纹理渲染：等价 drawTexture 的
+     *  (u,v,regionWidth,regionHeight,textureWidth,textureHeight) 语义，但用 tint 着色。
+     *  图标染色（例如把白色剪影的月亮贴图染成紫色）用这个，采样语义与 drawWithAlpha 的重载一致。 */
+    public static void drawTinted(DrawContext g, Identifier tex,
+                                  int x, int y, int w, int h,
+                                  float u, float v, int regionW, int regionH,
+                                  int texW, int texH, int argb) {
+        if (w <= 0 || h <= 0) return;
+        g.drawTexture(RenderPipelines.GUI_TEXTURED, tex, x, y,
+            u, v, w, h, regionW, regionH, texW, texH, argb);
+    }
+
     /**
      * 带整体透明度 + UV 采样的纹理渲染：等价 drawTexture 的
      * (u,v,regionWidth,regionHeight,textureWidth,textureHeight) 语义，但带动态 alpha。

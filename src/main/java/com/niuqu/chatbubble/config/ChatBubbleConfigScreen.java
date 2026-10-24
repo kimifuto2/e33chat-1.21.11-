@@ -96,6 +96,10 @@ public class ChatBubbleConfigScreen extends Screen {
     private boolean soundPublic, soundSystem, soundWhisper;
     private boolean debugLog, preserveInput, colorCodes, closeChatOnSend;
     private boolean mentionBannerEnabled, systemBannerEnabled, mentionSoundEnabled, mentionRequireAt, mentionWhisperBanner;
+    private boolean dndEnabled;
+    private boolean publicOverlayEnabled;
+    /** 公屏小窗静默淡出秒数（1~60，默认 5）。 */
+    private int publicOverlayIdleSeconds = 5;
     private boolean blurEnabled, ownMentionNotify, ownQuoteNotify, ownWhisperNotify;
     private int mentionBannerDuration, timeSeparatorMinutes;
     private int panelWidth, bubbleCornerRadius, panelOpacity, soundVolume, bannerCornerRadius, bannerOpacity;
@@ -107,6 +111,8 @@ public class ChatBubbleConfigScreen extends Screen {
     private boolean hideRepeatedAvatars;
     private List<String> sidebarHidePatterns;
     private List<String> blockedPlayers;
+    // 私聊免打扰名单（玩家名）：本屏没有对应控件，但 saveAll 要原样写回
+    private List<String> dndWhisperPlayers = new ArrayList<>();
 
     // 打开时的快照——用于 changeCount / revertAll
     private ChatBubbleConfig snapshot;
@@ -218,7 +224,12 @@ public class ChatBubbleConfigScreen extends Screen {
             ChatBubbleClientSetup.config().uploadField(),
             ChatBubbleClientSetup.config().uploadExtra(),
             ChatBubbleClientSetup.config().uploadResponse(),
-            messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize));
+            messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
+            publicOverlayIdleSeconds,
+            // 私聊免打扰名单不在本屏编辑（开关是聊天窗口标题栏那颗月亮按钮：
+            // 在私聊视图下点它切换的就是当前对象的 DND），
+            // 保存时必须原样带回，否则"改任何一个设置"都会把名单清空。
+            dndWhisperPlayers));
     }
 
     private void loadFromConfig() {
@@ -243,6 +254,12 @@ public class ChatBubbleConfigScreen extends Screen {
         mentionSoundEnabled = cfg.mentionSoundEnabled();
         mentionRequireAt = cfg.mentionRequireAt();
         mentionWhisperBanner = cfg.mentionWhisperBanner();
+        dndEnabled = cfg.dndEnabled();
+        // 可空：旧配置文件没有这个键 → 视为默认（开启）
+        publicOverlayEnabled = cfg.publicOverlayEnabled() == null || cfg.publicOverlayEnabled();
+        // 可空：旧配置文件没有这个键 → 视为默认 5 秒
+        publicOverlayIdleSeconds = cfg.publicOverlayIdleSeconds() != null
+            ? cfg.publicOverlayIdleSeconds() : ChatBubbleConfig.PUBLIC_OVERLAY_IDLE_DEFAULT_SECONDS;
         blurEnabled = cfg.blurEnabled(); panelOpacity = cfg.panelOpacity();
         soundVolume = cfg.soundVolume();
         ownMentionNotify = cfg.ownMentionNotify(); ownQuoteNotify = cfg.ownQuoteNotify();
@@ -261,6 +278,8 @@ public class ChatBubbleConfigScreen extends Screen {
         ownTextColor = cfg.ownTextColor(); otherTextColor = cfg.otherTextColor();
         sidebarHidePatterns = new ArrayList<>(cfg.sidebarHidePatterns());
         blockedPlayers = new ArrayList<>(cfg.blockedPlayers());
+        // 旧配置文件没有这个键 → null，视为空名单
+        dndWhisperPlayers = new ArrayList<>(cfg.dndWhisperPlayers() != null ? cfg.dndWhisperPlayers() : List.of());
         messageGap = cfg.messageGap() != null ? cfg.messageGap() : 6;
         avatarSize = cfg.avatarSize() != null ? cfg.avatarSize() : 20;
         bubbleSize = cfg.bubbleSize() != null ? cfg.bubbleSize() : 9;
@@ -461,11 +480,18 @@ public class ChatBubbleConfigScreen extends Screen {
     private final List<SectionDef> HUD_SECTIONS = List.of(
         SectionDef.of("e33chat.config.section.icon",
             OptionDef.bool("e33chat.config.red_dot", Ref.b(() -> redDotEnabled, v -> redDotEnabled = v)),
-            OptionDef.bool("e33chat.config.hide_chat_icon", Ref.b(() -> hideChatIcon, v -> hideChatIcon = v)))
+            OptionDef.bool("e33chat.config.hide_chat_icon", Ref.b(() -> hideChatIcon, v -> hideChatIcon = v)),
+            OptionDef.bool("e33chat.config.public_overlay", Ref.b(() -> publicOverlayEnabled, v -> publicOverlayEnabled = v)),
+            // 静默淡出秒数：与其它数值项一样用输入框（1~60，越界不写入 → 保持上一次合法值）
+            OptionDef.intBox("e33chat.config.public_overlay_idle_seconds",
+                Ref.i(() -> publicOverlayIdleSeconds, v -> publicOverlayIdleSeconds = v),
+                ChatBubbleConfig.PUBLIC_OVERLAY_IDLE_MIN_SECONDS,
+                ChatBubbleConfig.PUBLIC_OVERLAY_IDLE_MAX_SECONDS, 2))
     );
 
     private final List<SectionDef> NOTIFY_SECTIONS = List.of(
         SectionDef.of("e33chat.config.section.mention",
+            OptionDef.bool("e33chat.config.dnd_enabled", Ref.b(() -> dndEnabled, v -> dndEnabled = v)),
             OptionDef.bool("e33chat.config.mention_banner_enabled", Ref.b(() -> mentionBannerEnabled, v -> mentionBannerEnabled = v)),
             OptionDef.bool("e33chat.config.mention_sound_enabled", Ref.b(() -> mentionSoundEnabled, v -> mentionSoundEnabled = v)),
             OptionDef.bool("e33chat.config.mention_require_at", Ref.b(() -> mentionRequireAt, v -> mentionRequireAt = v))),

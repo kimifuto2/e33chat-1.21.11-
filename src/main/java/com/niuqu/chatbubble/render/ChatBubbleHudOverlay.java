@@ -40,6 +40,8 @@ public class ChatBubbleHudOverlay {
     public static void render(DrawContext g) {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.player == null || mc.options == null) return;
+        // F1 隐藏 HUD 时，本模组的聊天图标/提示条/通知横幅也一起隐藏（与原生 HUD 行为一致）
+        if (mc.options.hudHidden) return;
 
         g.getMatrices().pushMatrix();
         g.getMatrices().translate(0, 0);
@@ -58,6 +60,10 @@ public class ChatBubbleHudOverlay {
         int x = 3;
         int iconY = screenH - ICON_S - 20;
         int textY = iconY + ICON_S + 1;
+
+        // 公屏消息小窗：只有聊天面板关闭时才画（上面已对 currentScreen 早退，F1 也在入口早退），
+        // 位置钉在聊天图标正上方、与图标左对齐，先画面板再画图标，两者不会互相遮挡
+        PublicChatOverlay.render(g, x, iconY);
 
         if (!cfg().hideChatIcon()) {
             drawIcon(g, x, iconY);
