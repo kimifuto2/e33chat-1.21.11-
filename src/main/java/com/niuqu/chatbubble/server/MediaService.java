@@ -3,7 +3,7 @@ package com.niuqu.chatbubble.server;
 import com.niuqu.chatbubble.network.MediaResponsePayload;
 import com.niuqu.chatbubble.network.MediaUploadAckPayload;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
-import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.server.level.ServerPlayer;
 
 /**
  * Server-side media hosting business logic (rate limit, chunked download,
@@ -17,7 +17,7 @@ public final class MediaService {
     private MediaService() {}
 
     /** Client requests a download: rate-limit check, existence check, chunked reply. */
-    public static void handleRequest(ServerPlayerEntity sender, DiskMediaStore store, String mediaId) {
+    public static void handleRequest(ServerPlayer sender, DiskMediaStore store, String mediaId) {
         if (!store.allowTransfer(sender.getName().getString())) {
             sendNotFound(sender, mediaId);
             return;
@@ -38,13 +38,13 @@ public final class MediaService {
         }
     }
 
-    private static void sendNotFound(ServerPlayerEntity sender, String mediaId) {
+    private static void sendNotFound(ServerPlayer sender, String mediaId) {
         // not-found sentinel: MediaResponsePayload(mediaId, 0, 1, empty)
         ServerPlayNetworking.send(sender, new MediaResponsePayload(mediaId, 0, 1, new byte[0]));
     }
 
     /** One chunk of an upload; acks with the media id when the upload completes. */
-    public static void handleUpload(ServerPlayerEntity sender, DiskMediaStore store, boolean mediaEnabled,
+    public static void handleUpload(ServerPlayer sender, DiskMediaStore store, boolean mediaEnabled,
                                     boolean autoClean, long uploadId, int index, int totalChunks,
                                     int totalBytes, String contentType, byte[] chunk) {
         if (!mediaEnabled) {

@@ -1,6 +1,6 @@
 package com.niuqu.chatbubble.render;
 
-import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
 
 /**
  * Panel background blur.
@@ -16,7 +16,7 @@ public class BlurRenderer {
 
     private BlurRenderer() {}
 
-    public static void blurPanel(DrawContext g, int x, int y, int w, int h) {
+    public static void blurPanel(UiCanvas g, int x, int y, int w, int h) {
         try {
             g.applyBlur();
         } catch (Throwable t) {

@@ -3,8 +3,8 @@ package com.niuqu.chatbubble.chat.capture;
 import com.niuqu.chatbubble.chat.TemplateMatcher;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import java.util.UUID;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 
 /**
  * Template layer: server-declared message formats parse exactly (strongest
@@ -38,7 +38,7 @@ public final class TemplateLayer {
 
     public static boolean isTemplateNameKnown(String name) {
         if (name == null || name.isEmpty()) return false;
-        var player = MinecraftClient.getInstance().player;
+        var player = Minecraft.getInstance().player;
         if (player != null) {
             String myName = player.getName().getString();
             if (!myName.isEmpty() && (name.equals(myName) || name.contains(myName))) return true;
@@ -49,7 +49,7 @@ public final class TemplateLayer {
     // Server template parse: exact field split with style-preserving offsets.
     // Returns null on no match (fall back to the guards) or when the line is our
     // own echo (already bubbled via the authoritative player channel / suppressed).
-    public static ChatMessageStore.SenderMeta matchByTemplate(Text message, String text) {
+    public static ChatMessageStore.SenderMeta matchByTemplate(Component message, String text) {
         var r = TemplateMatcher.match(text, ChatMessageStore.serverChatTemplates(),
             ChatMessageStore.serverWhisperTemplates(), TemplateLayer::isTemplateNameKnown);
         if (r.isEmpty()) {
@@ -61,8 +61,8 @@ public final class TemplateLayer {
         var info = ChatClassifier.resolveOnlinePlayer(verified);
         UUID uid = info != null ? info.getProfile().id() : ChatMessageStore.findSeenUuid(verified);
         String rawName = info != null ? info.getProfile().name() : verified;
-        boolean isSelf = uid != null && MinecraftClient.getInstance().player != null
-            && uid.equals(MinecraftClient.getInstance().player.getUuid());
+        boolean isSelf = uid != null && Minecraft.getInstance().player != null
+            && uid.equals(Minecraft.getInstance().player.getUUID());
         if (isSelf) {
             if (tpl.whisper()) {
                 // outgoing whisper echo — never bubble a second copy; the suppress
@@ -78,8 +78,8 @@ public final class TemplateLayer {
             ChatMessageStore.debugLog(() -> "[e33chat] System(template own line) | text='" + text + "'");
             return null;
         }
-        Text nameComp = templateSlice(message, text, tpl.nameStart(), tpl.nameEnd());
-        Text contentComp = templateSlice(message, text, tpl.contentStart(), tpl.contentEnd());
+        Component nameComp = templateSlice(message, text, tpl.nameStart(), tpl.nameEnd());
+        Component contentComp = templateSlice(message, text, tpl.contentStart(), tpl.contentEnd());
         boolean whisper = tpl.whisper();
         String partner = whisper ? tpl.sender() : null;
         ChatMessageStore.debugLog(() -> "[e33chat] System(template) | text='" + text + "' | name='" + nameComp.getString() + "' | whisper=" + whisper + " | partner=" + partner + " | content='" + contentComp.getString() + "'");
@@ -91,7 +91,7 @@ public final class TemplateLayer {
     // (some plugins embed raw "§6" text instead of real styles), rebuild it with
     // parseStyledText to render actual colors; otherwise keep the original
     // component slice (preserves real per-run styles like the guards do).
-    public static Text templateSlice(Text message, String text, int from, int to) {
+    public static Component templateSlice(Component message, String text, int from, int to) {
         String sub = text.substring(from, to);
         if (sub.indexOf('§') >= 0) return ChatMessageStore.parseStyledText(sub);
         return ChatMessageStore.sliceStyled(message, from, to);

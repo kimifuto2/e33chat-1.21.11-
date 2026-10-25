@@ -1,6 +1,6 @@
 package com.niuqu.chatbubble.channeldiet;
 
-import net.minecraft.util.Identifier;
+import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
 import java.util.Collection;

@@ -10,14 +10,15 @@ import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.render.RoundRectRenderer;
 import com.niuqu.chatbubble.render.UiTokens;
 import com.niuqu.chatbubble.texture.ColoredTextureRenderer;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.util.DefaultSkinHelper;
-import net.minecraft.entity.player.SkinTextures;
-import net.minecraft.text.MutableText;
-import net.minecraft.text.OrderedText;
-import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import com.niuqu.chatbubble.render.UiCanvas;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.resources.DefaultPlayerSkin;
+import net.minecraft.world.entity.player.PlayerSkin;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.util.FormattedCharSequence;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 
 import java.util.*;
 
@@ -60,57 +61,57 @@ public class MentionNotificationBanner {
 
     private MentionNotificationBanner() {}
 
-    public void enqueue(UUID senderUUID, Text senderName, Text content,
+    public void enqueue(UUID senderUUID, Component senderName, Component content,
                         int messageIndex, NotificationType type) {
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
 
         String prefix = switch (type) {
-            case MENTION -> Text.translatable("e33chat.banner.mention").getString();
-            case QUOTE -> Text.translatable("e33chat.banner.quote").getString();
-            case WHISPER -> Text.translatable("e33chat.banner.whisper").getString();
-            case SYSTEM -> Text.translatable("e33chat.banner.system").getString();
+            case MENTION -> Component.translatable("e33chat.banner.mention").getString();
+            case QUOTE -> Component.translatable("e33chat.banner.quote").getString();
+            case WHISPER -> Component.translatable("e33chat.banner.whisper").getString();
+            case SYSTEM -> Component.translatable("e33chat.banner.system").getString();
         };
-        Text labeledName = Text.literal(prefix).append(senderName);
+        Component labeledName = Component.literal(prefix).append(senderName);
 
         // System banners carry no sender — plain text, no avatar, flush text start.
         // [系统] 标签与第一行内容同行，内容宽度预算扣掉标签宽，避免同行溢出横幅
         boolean hasAvatar = type != NotificationType.SYSTEM;
         int textOriginX = hasAvatar ? TEXT_X : TEXT_X_PLAIN;
-        int maxTextW = Math.min(MAX_TEXT_W, mc.getWindow().getScaledWidth() - textOriginX - 12);
-        int dotsW = mc.textRenderer.getWidth("...");
-        int contentMaxW = hasAvatar ? maxTextW : Math.max(40, maxTextW - mc.textRenderer.getWidth(prefix));
+        int maxTextW = Math.min(MAX_TEXT_W, mc.getWindow().getGuiScaledWidth() - textOriginX - 12);
+        int dotsW = mc.font.width("...");
+        int contentMaxW = hasAvatar ? maxTextW : Math.max(40, maxTextW - mc.font.width(prefix));
 
-        List<OrderedText> nameLines = mc.textRenderer.wrapLines(labeledName, maxTextW);
-        OrderedText nameSeq;
+        List<FormattedCharSequence> nameLines = mc.font.split(labeledName, maxTextW);
+        FormattedCharSequence nameSeq;
         if (nameLines.isEmpty()) {
-            nameSeq = OrderedText.EMPTY;
+            nameSeq = FormattedCharSequence.EMPTY;
         } else if (nameLines.size() > 1) {
-            String plainName = mc.textRenderer.trimToWidth(
+            String plainName = mc.font.plainSubstrByWidth(
                 labeledName.getString(), maxTextW - dotsW) + "...";
-            nameSeq = mc.textRenderer.wrapLines(Text.literal(plainName), maxTextW).get(0);
+            nameSeq = mc.font.split(Component.literal(plainName), maxTextW).get(0);
         } else {
             nameSeq = nameLines.get(0);
         }
 
-        List<OrderedText> msgLines = mc.textRenderer.wrapLines(content, contentMaxW);
+        List<FormattedCharSequence> msgLines = mc.font.split(content, contentMaxW);
         if (msgLines.size() > MAX_MSG_LINES) {
             // Styled truncation: keeps per-run colors of multi-colored system lines
-            msgLines = mc.textRenderer.wrapLines(truncateStyled(content, contentMaxW * 2 - dotsW, mc.textRenderer, "..."), contentMaxW);
+            msgLines = mc.font.split(truncateStyled(content, contentMaxW * 2 - dotsW, mc.font, "..."), contentMaxW);
             if (msgLines.size() > MAX_MSG_LINES)
                 msgLines = msgLines.subList(0, MAX_MSG_LINES);
         }
 
-        int textW = mc.textRenderer.getWidth(nameSeq);
-        for (var line : msgLines) textW = Math.max(textW, mc.textRenderer.getWidth(line));
+        int textW = mc.font.width(nameSeq);
+        for (var line : msgLines) textW = Math.max(textW, mc.font.width(line));
         if (!hasAvatar && !msgLines.isEmpty()) {
             // 纯文本：[系统] 与第一行内容并排，横幅宽度按合并行算
-            textW = Math.max(textW, mc.textRenderer.getWidth(nameSeq) + mc.textRenderer.getWidth(msgLines.get(0)));
+            textW = Math.max(textW, mc.font.width(nameSeq) + mc.font.width(msgLines.get(0)));
         }
         int bannerW = textOriginX + textW + 12;
         // 高度：头像横幅固定 36（装名字+内容+头像）；纯文本系统横幅按行数紧凑
         // （上下各 5px 边距），1 行 ~20 / 2 行 ~30，不再留大片空白
         int bannerH = hasAvatar ? BANNER_H
-            : mc.textRenderer.fontHeight * msgLines.size() + 10;
+            : mc.font.lineHeight * msgLines.size() + 10;
 
         PendingBanner pb = new PendingBanner(senderUUID, senderName, content, messageIndex,
             type, hasAvatar, nameSeq, msgLines, textW, bannerW, bannerH);
@@ -164,14 +165,14 @@ public class MentionNotificationBanner {
         }
     }
 
-    public void render(DrawContext g, int screenW, int screenH) {
+    public void render(UiCanvas g, int screenW, int screenH) {
         if (!ChatBubbleClientSetup.config().mentionBannerEnabled()) return;
         // 到期/退出清除：HUD 层每帧 tick，但屏内路径(renderBannerForScreen)不走 HUD tick，
         // 所以在渲染开头先 tick 一次，保证横幅在任意渲染路径都会按时自动隐藏。
         this.tick();
         if (banners.isEmpty() && exiting.isEmpty()) return;
 
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         long now = System.currentTimeMillis();
 
         // Exiting banners render behind the active stack while they shrink/fade.
@@ -245,9 +246,9 @@ public class MentionNotificationBanner {
         float target = 0f;
         JadeCompat.Rect jade = JadeCompat.tooltipRect();
         if (jade != null) {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            int screenW = mc.getWindow().getScaledWidth();
-            int screenH = mc.getWindow().getScaledHeight();
+            Minecraft mc = Minecraft.getInstance();
+            int screenW = mc.getWindow().getGuiScaledWidth();
+            int screenH = mc.getWindow().getGuiScaledHeight();
             float centerX = screenW / 2f + ChatBubbleClientSetup.config().bannerOffsetX();
             float halfW = 0f;
             for (ActiveBanner b : banners) halfW = Math.max(halfW, b.data.bannerW / 2f);
@@ -355,10 +356,10 @@ public class MentionNotificationBanner {
         return 1f;
     }
 
-    private void renderBanner(DrawContext g, PendingBanner b, int screenW,
+    private void renderBanner(UiCanvas g, PendingBanner b, int screenW,
                               float y, float scale, float alpha) {
         if (alpha <= 0.003f) return;
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
 
         float bgAlphaMul = alpha * (ChatBubbleClientSetup.config().bannerOpacity() / 100f);
 
@@ -391,7 +392,7 @@ public class MentionNotificationBanner {
         int textX = x + (b.hasAvatar ? TEXT_X : TEXT_X_PLAIN);
         // Compact banners show only the first content line, matching the mobile
         // notification style: avatar + title + one-line preview.
-        List<OrderedText> drawLines = scale < 1f && b.msgLines.size() > 1
+        List<FormattedCharSequence> drawLines = scale < 1f && b.msgLines.size() > 1
             ? b.msgLines.subList(0, 1) : b.msgLines;
         int nameColor, msgColor;
         if (b.hasAvatar) {
@@ -403,15 +404,15 @@ public class MentionNotificationBanner {
             int nameY = iy + 6;
             int nameAlpha = (int) ((theme.textPrimary() >>> 24) * alpha);
             nameColor = (nameAlpha << 24) | (theme.textPrimary() & 0x00FFFFFF);
-            g.drawText(mc.textRenderer, b.nameSeq, textX, nameY, nameColor, false);
+            g.drawText(mc.font, b.nameSeq, textX, nameY, nameColor, false);
 
             // Message lines
             int msgAlpha = (int) ((theme.textSecondary() >>> 24) * alpha);
             msgColor = (msgAlpha << 24) | (theme.textSecondary() & 0x00FFFFFF);
-            int msgY = nameY + mc.textRenderer.fontHeight + 2;
+            int msgY = nameY + mc.font.lineHeight + 2;
             for (int i = 0; i < drawLines.size(); i++)
-                g.drawText(mc.textRenderer, drawLines.get(i), textX,
-                    msgY + i * mc.textRenderer.fontHeight, msgColor, false);
+                g.drawText(mc.font, drawLines.get(i), textX,
+                    msgY + i * mc.font.lineHeight, msgColor, false);
         } else {
             // Plain-text banner: [系统] label + content vertically centered, single row.
             // System notices read as yellow like the reference toast (bannerText).
@@ -419,14 +420,14 @@ public class MentionNotificationBanner {
             nameColor = (nameAlpha << 24) | (theme.bannerText() & 0x00FFFFFF);
             int msgAlpha = (int) ((theme.bannerText() >>> 24) * alpha);
             msgColor = (msgAlpha << 24) | (theme.bannerText() & 0x00FFFFFF);
-            int lineH = mc.textRenderer.fontHeight;
+            int lineH = mc.font.lineHeight;
             int totalH = lineH * drawLines.size();
             int textY = iy + (bannerH - totalH) / 2;
-            g.drawText(mc.textRenderer, b.nameSeq, textX, textY, nameColor, false);
-            int contentX = textX + mc.textRenderer.getWidth(b.nameSeq);
-            g.drawText(mc.textRenderer, drawLines.get(0), contentX, textY, msgColor, false);
+            g.drawText(mc.font, b.nameSeq, textX, textY, nameColor, false);
+            int contentX = textX + mc.font.width(b.nameSeq);
+            g.drawText(mc.font, drawLines.get(0), contentX, textY, msgColor, false);
             for (int i = 1; i < drawLines.size(); i++)
-                g.drawText(mc.textRenderer, drawLines.get(i), textX,
+                g.drawText(mc.font, drawLines.get(i), textX,
                     textY + i * lineH, msgColor, false);
         }
 
@@ -439,7 +440,7 @@ public class MentionNotificationBanner {
         return com.niuqu.chatbubble.render.SkinResolver.getSkin(uuid, name);
     }
 
-    private void drawPlayerHead(DrawContext g, Identifier skin, int x, int y,
+    private void drawPlayerHead(UiCanvas g, Identifier skin, int x, int y,
                                  int baseSize, int hatSize, float alpha) {
         if (alpha <= 0.003f) return;
         ColoredTextureRenderer.drawWithAlpha(g, skin, x, y, baseSize, baseSize, 8.0F, 8.0F, 8, 8, 64, 64, alpha);
@@ -454,25 +455,25 @@ public class MentionNotificationBanner {
 
     // Width-limit a text run by run, keeping each run's style (colors of
     // multi-colored system lines survive truncation), then append the ellipsis.
-    private static Text truncateStyled(Text src, int maxWidth,
-                                       net.minecraft.client.font.TextRenderer font, String suffix) {
-        int budget = maxWidth - font.getWidth(suffix);
-        MutableText out = Text.empty();
+    private static Component truncateStyled(Component src, int maxWidth,
+                                       net.minecraft.client.gui.Font font, String suffix) {
+        int budget = maxWidth - font.width(suffix);
+        MutableComponent out = Component.empty();
         int[] used = {0};
         src.visit((style, text) -> {
             if (used[0] >= budget) return java.util.Optional.<Object>empty();
-            int w = font.getWidth(text);
+            int w = font.width(text);
             if (used[0] + w <= budget) {
-                out.append(Text.literal(text).fillStyle(style));
+                out.append(Component.literal(text).withStyle(style));
                 used[0] += w;
             } else {
-                String sub = font.trimToWidth(text, budget - used[0]);
-                out.append(Text.literal(sub).fillStyle(style));
+                String sub = font.plainSubstrByWidth(text, budget - used[0]);
+                out.append(Component.literal(sub).withStyle(style));
                 used[0] = budget;
             }
             return java.util.Optional.<Object>empty();
-        }, net.minecraft.text.Style.EMPTY);
-        return out.append(Text.literal(suffix));
+        }, net.minecraft.network.chat.Style.EMPTY);
+        return out.append(Component.literal(suffix));
     }
 
     private static final class ActiveBanner {
@@ -506,8 +507,8 @@ public class MentionNotificationBanner {
         }
     }
 
-    private record PendingBanner(UUID senderUUID, Text senderName, Text content,
+    private record PendingBanner(UUID senderUUID, Component senderName, Component content,
                                   int messageIndex, NotificationType type, boolean hasAvatar,
-                                  OrderedText nameSeq, List<OrderedText> msgLines,
+                                  FormattedCharSequence nameSeq, List<FormattedCharSequence> msgLines,
                                   int textW, int bannerW, int bannerH) {}
 }

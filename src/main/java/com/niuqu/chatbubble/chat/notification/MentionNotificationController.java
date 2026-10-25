@@ -5,10 +5,10 @@ import com.niuqu.chatbubble.ChatBubbleScreen;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.chat.MentionDetector;
 import com.niuqu.chatbubble.chat.notification.MentionNotificationBanner.NotificationType;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.sound.PositionedSoundInstance;
-import net.minecraft.sound.SoundEvents;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.resources.sounds.SimpleSoundInstance;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.network.chat.Component;
 
 import java.util.*;
 
@@ -23,9 +23,9 @@ public class MentionNotificationController {
 
     private MentionNotificationController() {}
 
-    public void onMessageCaptured(Text content, ChatMessageStore.SenderMeta meta,
+    public void onMessageCaptured(Component content, ChatMessageStore.SenderMeta meta,
                                    int messageIndex, String replySender) {
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return;
 
         String localName = mc.player.getName().getString();
@@ -34,9 +34,9 @@ public class MentionNotificationController {
 
         if (!MentionDetector.isMentioned(text, localName, requireAt, replySender)) return;
 
-        boolean isOwn = (meta.senderUUID() != null && meta.senderUUID().equals(mc.player.getUuid()))
+        boolean isOwn = (meta.senderUUID() != null && meta.senderUUID().equals(mc.player.getUUID()))
             || (meta.rawPlayerName() != null && meta.rawPlayerName().equals(localName));
-        boolean chatOpen = mc.currentScreen instanceof ChatBubbleScreen;
+        boolean chatOpen = mc.gui.screen() instanceof ChatBubbleScreen;
         NotificationType type = (replySender != null && replySender.equals(localName))
             ? NotificationType.QUOTE : NotificationType.MENTION;
         boolean selfNotify = isOwn && (type == NotificationType.QUOTE
@@ -54,8 +54,8 @@ public class MentionNotificationController {
             + " | preview=" + text.substring(0, Math.min(40, text.length())));
 
         if ((!isOwn || selfNotify) && ChatBubbleClientSetup.config().mentionSoundEnabled()) {
-            mc.getSoundManager().play(PositionedSoundInstance.ui(
-                SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 0.25f,
+            mc.getSoundManager().play(SimpleSoundInstance.forUI(
+                SoundEvents.EXPERIENCE_ORB_PICKUP, 0.25f,
                 0.25f * ChatBubbleClientSetup.config().soundVolume() / 100f));
         }
 
@@ -64,14 +64,14 @@ public class MentionNotificationController {
         }
     }
 
-    public void onWhisperReceived(UUID senderUUID, Text senderName, Text content,
+    public void onWhisperReceived(UUID senderUUID, Component senderName, Component content,
                                    int messageIndex, String partnerName) {
-        MinecraftClient mc = MinecraftClient.getInstance();
+        Minecraft mc = Minecraft.getInstance();
         if (mc.player == null) return;
 
-        boolean chatOpen = mc.currentScreen instanceof ChatBubbleScreen;
+        boolean chatOpen = mc.gui.screen() instanceof ChatBubbleScreen;
         String senderStr = senderName.getString().replaceAll("§.", "");
-        boolean isOwn = (senderUUID != null && senderUUID.equals(mc.player.getUuid()))
+        boolean isOwn = (senderUUID != null && senderUUID.equals(mc.player.getUUID()))
             || mc.player.getName().getString().equals(senderStr);
         // 免打扰按「这条私聊的对话对象」判定（不是发送者自己）：自己发出的私聊回声
         // 也要看对方那条私聊有没有开免打扰。partnerName 由 store 的 whisperPartner 传下来。
@@ -91,8 +91,8 @@ public class MentionNotificationController {
             if (ChatMessageEffects.dndMutesWhisper(dndPartner)) {
                 ChatMessageStore.debugLog(() -> "[e33chat] sound suppressed by DND（whisper） | partner=" + dndPartner);
             } else {
-                mc.getSoundManager().play(PositionedSoundInstance.ui(
-                    SoundEvents.ENTITY_EXPERIENCE_ORB_PICKUP, 0.25f,
+                mc.getSoundManager().play(SimpleSoundInstance.forUI(
+                    SoundEvents.EXPERIENCE_ORB_PICKUP, 0.25f,
                     0.25f * ChatBubbleClientSetup.config().soundVolume() / 100f));
             }
         }
@@ -104,10 +104,10 @@ public class MentionNotificationController {
 
     // System messages (server broadcasts/deaths/joins) pop the same banner as
     // @/whisper/quote; no sender name — the [系统] label is the name row.
-    public void onSystemMessage(Text content, int messageIndex) {
-        if (MinecraftClient.getInstance().player == null) return;
+    public void onSystemMessage(Component content, int messageIndex) {
+        if (Minecraft.getInstance().player == null) return;
         if (!ChatBubbleClientSetup.config().systemBannerEnabled()) return;
-        enqueueDeduped(new UUID(0, 0), Text.empty(), content, messageIndex,
+        enqueueDeduped(new UUID(0, 0), Component.empty(), content, messageIndex,
             NotificationType.SYSTEM, null);
     }
 
@@ -129,7 +129,7 @@ public class MentionNotificationController {
         return false;
     }
 
-    private void enqueueDeduped(UUID uuid, Text name, Text content, int index,
+    private void enqueueDeduped(UUID uuid, Component name, Component content, int index,
                                  NotificationType type, String partnerName) {
         // 免打扰（DND）唯一拦截点：横幅「入库」之前。@提及（MENTION）与引用回复（QUOTE）
         // 优先级高于免打扰，不在抑制集合里，因此照常弹出（需求：有人 @我时仍要提醒）。

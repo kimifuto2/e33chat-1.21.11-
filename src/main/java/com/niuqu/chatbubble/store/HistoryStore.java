@@ -17,11 +17,11 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.MutableText;
-import net.minecraft.text.Style;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.network.chat.Style;
+import net.minecraft.network.chat.Component;
+import net.minecraft.ChatFormatting;
 public final class HistoryStore {
     private HistoryStore() {}
 
@@ -32,7 +32,7 @@ public final class HistoryStore {
         // that break file systems / path parsing. The SHA-256 short hash disambiguates
         // worlds whose sanitized names collide.
         String safe = worldKey.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_");
-        return new File(MinecraftClient.getInstance().runDirectory,
+        return new File(Minecraft.getInstance().gameDirectory,
             "e33chat/history/" + safe + "_" + sha256Short(worldKey) + ".json");
     }
 
@@ -41,7 +41,7 @@ public final class HistoryStore {
     public static File getLegacyHistoryFile(String worldKey) {
         String safe = worldKey.replaceAll("[^a-zA-Z0-9_.\\-]", "_");
         String hash = Integer.toHexString(worldKey.hashCode());
-        return new File(MinecraftClient.getInstance().runDirectory,
+        return new File(Minecraft.getInstance().gameDirectory,
             "e33chat/history/" + safe + "_" + hash + ".json");
     }
 
@@ -67,7 +67,7 @@ public final class HistoryStore {
     // mirrors the AuthMe-family login/register aliases
     public static boolean isSensitiveCommand(String text) {
         if (text == null) return false;
-        String s = Formatting.strip(text);
+        String s = ChatFormatting.stripFormatting(text);
         if (s == null) return false;
         s = s.trim();
         if (!s.startsWith("/")) return false;
@@ -94,9 +94,9 @@ public final class HistoryStore {
         obj.put("uuid", msg.senderUUID() != null ? msg.senderUUID().toString() : "");
         String senderJson = null, contentJson = null;
         try {
-            senderJson = net.minecraft.text.TextCodecs.CODEC
+            senderJson = net.minecraft.network.chat.ComponentSerialization.CODEC
                 .encodeStart(com.mojang.serialization.JsonOps.INSTANCE, msg.senderName()).result().map(Object::toString).orElse(null);
-            contentJson = net.minecraft.text.TextCodecs.CODEC
+            contentJson = net.minecraft.network.chat.ComponentSerialization.CODEC
                 .encodeStart(com.mojang.serialization.JsonOps.INSTANCE, msg.content()).result().map(Object::toString).orElse(null);
         } catch (Throwable ignored) {
             // Component codecs unavailable (headless test env / broken registries):
@@ -162,12 +162,12 @@ public final class HistoryStore {
         if (!(timeObj instanceof Number)) return null;
         UUID uuid = null;
         try { uuid = UUID.fromString(String.valueOf(obj.get("uuid"))); } catch (Exception ignored) {}
-        Text senderName = componentFrom(obj, "senderJson", "sender");
-        Text content = componentFrom(obj, "contentJson", "content");
+        Component senderName = componentFrom(obj, "senderJson", "sender");
+        Component content = componentFrom(obj, "contentJson", "content");
         if (content == null || content.getString().isBlank()) return null;
         return new ChatMessage(
             uuid != null ? uuid : new UUID(0, 0),
-            senderName != null ? senderName : Text.literal(""),
+            senderName != null ? senderName : Component.literal(""),
             content,
             ((Number) timeObj).longValue(),
             Boolean.TRUE.equals(obj.get("own")),
@@ -183,10 +183,10 @@ public final class HistoryStore {
         );
     }
 
-    static Text componentFrom(Map<String, Object> obj, String jsonKey, String textKey) {
+    static Component componentFrom(Map<String, Object> obj, String jsonKey, String textKey) {
         String json = (String) obj.get(jsonKey);
         if (json != null) {
-            try { return net.minecraft.text.TextCodecs.CODEC.parse(com.mojang.serialization.JsonOps.INSTANCE, com.google.gson.JsonParser.parseString(json)).result().orElse(null); } catch (Exception ignored) {}
+            try { return net.minecraft.network.chat.ComponentSerialization.CODEC.parse(com.mojang.serialization.JsonOps.INSTANCE, com.google.gson.JsonParser.parseString(json)).result().orElse(null); } catch (Exception ignored) {}
         }
         String text = (String) obj.get(textKey);
         return text != null ? parseStyledText(text) : null;
@@ -215,15 +215,15 @@ public final class HistoryStore {
 
     // Section-sign codes ("§6...§r") back into a styled component; unknown codes
     // (e.g. a stray §x from a plugin) fall through as literal text
-    public static Text parseStyledText(String s) {
-        MutableText out = Text.empty();
+    public static Component parseStyledText(String s) {
+        MutableComponent out = Component.empty();
         Style style = Style.EMPTY;
         StringBuilder buf = new StringBuilder();
         for (int i = 0; i < s.length(); i++) {
             char ch = s.charAt(i);
             if (ch == '§' && i + 1 < s.length()) {
                 if (buf.length() > 0) {
-                    out.append(Text.literal(buf.toString()).fillStyle(style));
+                    out.append(Component.literal(buf.toString()).withStyle(style));
                     buf.setLength(0);
                 }
                 Style next = applySectionCode(style, s.charAt(i + 1));
@@ -238,32 +238,32 @@ public final class HistoryStore {
                 buf.append(ch);
             }
         }
-        if (buf.length() > 0) out.append(Text.literal(buf.toString()).fillStyle(style));
+        if (buf.length() > 0) out.append(Component.literal(buf.toString()).withStyle(style));
         return out;
     }
 
     static Style applySectionCode(Style style, char code) {
         switch (Character.toLowerCase(code)) {
-            case '0': return style.withColor(Formatting.BLACK.getColorValue() != null ? Formatting.BLACK.getColorValue() : null);
-            case '1': return style.withColor(Formatting.DARK_BLUE.getColorValue() != null ? Formatting.DARK_BLUE.getColorValue() : null);
-            case '2': return style.withColor(Formatting.DARK_GREEN.getColorValue() != null ? Formatting.DARK_GREEN.getColorValue() : null);
-            case '3': return style.withColor(Formatting.DARK_AQUA.getColorValue() != null ? Formatting.DARK_AQUA.getColorValue() : null);
-            case '4': return style.withColor(Formatting.DARK_RED.getColorValue() != null ? Formatting.DARK_RED.getColorValue() : null);
-            case '5': return style.withColor(Formatting.DARK_PURPLE.getColorValue() != null ? Formatting.DARK_PURPLE.getColorValue() : null);
-            case '6': return style.withColor(Formatting.GOLD.getColorValue() != null ? Formatting.GOLD.getColorValue() : null);
-            case '7': return style.withColor(Formatting.GRAY.getColorValue() != null ? Formatting.GRAY.getColorValue() : null);
-            case '8': return style.withColor(Formatting.DARK_GRAY.getColorValue() != null ? Formatting.DARK_GRAY.getColorValue() : null);
-            case '9': return style.withColor(Formatting.BLUE.getColorValue() != null ? Formatting.BLUE.getColorValue() : null);
-            case 'a': return style.withColor(Formatting.GREEN.getColorValue() != null ? Formatting.GREEN.getColorValue() : null);
-            case 'b': return style.withColor(Formatting.AQUA.getColorValue() != null ? Formatting.AQUA.getColorValue() : null);
-            case 'c': return style.withColor(Formatting.RED.getColorValue() != null ? Formatting.RED.getColorValue() : null);
-            case 'd': return style.withColor(Formatting.LIGHT_PURPLE.getColorValue() != null ? Formatting.LIGHT_PURPLE.getColorValue() : null);
-            case 'e': return style.withColor(Formatting.YELLOW.getColorValue() != null ? Formatting.YELLOW.getColorValue() : null);
-            case 'f': return style.withColor(Formatting.WHITE.getColorValue() != null ? Formatting.WHITE.getColorValue() : null);
+            case '0': return style.withColor(ChatFormatting.BLACK);
+            case '1': return style.withColor(ChatFormatting.DARK_BLUE);
+            case '2': return style.withColor(ChatFormatting.DARK_GREEN);
+            case '3': return style.withColor(ChatFormatting.DARK_AQUA);
+            case '4': return style.withColor(ChatFormatting.DARK_RED);
+            case '5': return style.withColor(ChatFormatting.DARK_PURPLE);
+            case '6': return style.withColor(ChatFormatting.GOLD);
+            case '7': return style.withColor(ChatFormatting.GRAY);
+            case '8': return style.withColor(ChatFormatting.DARK_GRAY);
+            case '9': return style.withColor(ChatFormatting.BLUE);
+            case 'a': return style.withColor(ChatFormatting.GREEN);
+            case 'b': return style.withColor(ChatFormatting.AQUA);
+            case 'c': return style.withColor(ChatFormatting.RED);
+            case 'd': return style.withColor(ChatFormatting.LIGHT_PURPLE);
+            case 'e': return style.withColor(ChatFormatting.YELLOW);
+            case 'f': return style.withColor(ChatFormatting.WHITE);
             case 'k': return style.withObfuscated(true);
             case 'l': return style.withBold(true);
             case 'm': return style.withStrikethrough(true);
-            case 'n': return style.withUnderline(true);
+            case 'n': return style.withUnderlined(true);
             case 'o': return style.withItalic(true);
             case 'r': return Style.EMPTY;
             default: return null;
@@ -286,14 +286,14 @@ public final class HistoryStore {
                 Map<String, Object> obj = list.get(i);
                 try {
                     UUID uuid = UUID.fromString((String) obj.get("senderUUID"));
-                    Text senderName = null;
+                    Component senderName = null;
                     String snJson = (String) obj.get("senderNameJson");
                     if (snJson != null) {
-                        try { senderName = net.minecraft.text.TextCodecs.CODEC.parse(com.mojang.serialization.JsonOps.INSTANCE, com.google.gson.JsonParser.parseString(snJson)).result().orElse(null); } catch (Exception ignored2) {}
+                        try { senderName = net.minecraft.network.chat.ComponentSerialization.CODEC.parse(com.mojang.serialization.JsonOps.INSTANCE, com.google.gson.JsonParser.parseString(snJson)).result().orElse(null); } catch (Exception ignored2) {}
                     }
-                    if (senderName == null) senderName = Text.literal((String) obj.get("senderName"));
-                    Text content = net.minecraft.text.TextCodecs.CODEC.parse(com.mojang.serialization.JsonOps.INSTANCE, com.google.gson.JsonParser.parseString((String) obj.get("content"))).result().orElse(null);
-                    if (content == null) content = Text.literal("");
+                    if (senderName == null) senderName = Component.literal((String) obj.get("senderName"));
+                    Component content = net.minecraft.network.chat.ComponentSerialization.CODEC.parse(com.mojang.serialization.JsonOps.INSTANCE, com.google.gson.JsonParser.parseString((String) obj.get("content"))).result().orElse(null);
+                    if (content == null) content = Component.literal("");
                     if (content.getString().isBlank()) continue;
                     LocalTime t = LocalTime.parse((String) obj.get("time"), DateTimeFormatter.ISO_LOCAL_TIME);
                     if (latest != null && t.isAfter(latest)) day = day.minusDays(1);

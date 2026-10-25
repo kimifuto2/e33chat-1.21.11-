@@ -3,7 +3,7 @@ package com.niuqu.chatbubble.texture;
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
 import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.render.ChatBubbleTheme;
-import net.minecraft.util.Identifier;
+import net.minecraft.resources.Identifier;
 
 /**
  * UI 纹理管理：仅负责按当前主题拼纹理 ID。

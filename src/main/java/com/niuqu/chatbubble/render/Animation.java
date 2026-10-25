@@ -1,7 +1,7 @@
 package com.niuqu.chatbubble.render;
 import com.niuqu.chatbubble.render.AnimationStyle;
 
-import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.Mth;
 
 public final class Animation {
     private Animation() {}
@@ -30,7 +30,7 @@ public final class Animation {
      * that need the ZOOM overshoot use {@link #easeOutBack(float)} directly.
      */
     public static float styleCurve(AnimationStyle style, float t) {
-        t = MathHelper.clamp(t, 0f, 1f);
+        t = Mth.clamp(t, 0f, 1f);
         if (style == null || style == AnimationStyle.NONE) return 1f;
         if (style == AnimationStyle.FADE) return easeOutQuad(t);
         return easeOutCubic(t); // SLIDE / ZOOM
@@ -61,8 +61,8 @@ public final class Animation {
     }
 
     public static float progress(long startMs, int durationMs, boolean closing) {
-        long elapsed = net.minecraft.util.Util.getMeasuringTimeMs() - startMs;
-        float t = MathHelper.clamp((float) elapsed / durationMs, 0f, 1f);
+        long elapsed = net.minecraft.util.Util.getMillis() - startMs;
+        float t = Mth.clamp((float) elapsed / durationMs, 0f, 1f);
         if (closing) return 1.0f - (t * t);
         return easeOutCubic(t);
     }

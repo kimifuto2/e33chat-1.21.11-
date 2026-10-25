@@ -1,21 +1,21 @@
 package com.niuqu.chatbubble.network;
 
-import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.util.Identifier;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.Identifier;
 
 /** Client -> server: request to download a server-hosted media file. */
-public record MediaRequestPayload(String mediaId) implements CustomPayload {
+public record MediaRequestPayload(String mediaId) implements CustomPacketPayload {
 
-    public static final CustomPayload.Id<MediaRequestPayload> ID =
-        new CustomPayload.Id<>(Identifier.of("e33chat", "media_request"));
+    public static final CustomPacketPayload.Type<MediaRequestPayload> ID =
+        new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("e33chat", "media_request"));
 
-    public static final PacketCodec<PacketByteBuf, MediaRequestPayload> CODEC = PacketCodec.of(
-        (value, buf) -> buf.writeString(value.mediaId),
-        buf -> new MediaRequestPayload(buf.readString())
+    public static final StreamCodec<FriendlyByteBuf, MediaRequestPayload> CODEC = StreamCodec.ofMember(
+        (value, buf) -> buf.writeUtf(value.mediaId),
+        buf -> new MediaRequestPayload(buf.readUtf())
     );
 
     @Override
-    public Id<MediaRequestPayload> getId() { return ID; }
+    public Type<MediaRequestPayload> type() { return ID; }
 }

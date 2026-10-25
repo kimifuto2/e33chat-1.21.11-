@@ -7,7 +7,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import net.minecraft.text.Text;
+import net.minecraft.network.chat.Component;
 
 /**
  * Cross-message timing state machine: echo suppression, whisper-echo dedup,
@@ -132,22 +132,22 @@ public final class EchoTracker {
         return new EchoMatch(false, false);
     }
 
-    public static EchoMatch consumeEchoIfSenderMatches(UUID senderUUID, Text senderName, String incomingText) {
+    public static EchoMatch consumeEchoIfSenderMatches(UUID senderUUID, Component senderName, String incomingText) {
         purgeStaleEchoes();
         if (pendingEchoes.isEmpty()) return new EchoMatch(false, false);
-        var player = net.minecraft.client.MinecraftClient.getInstance().player;
+        var player = net.minecraft.client.Minecraft.getInstance().player;
         if (player == null) return new EchoMatch(false, false);
         // Deterministic: signed-channel echoes carry the sender's real UUID
-        boolean match = senderUUID != null && senderUUID.equals(player.getUuid());
+        boolean match = senderUUID != null && senderUUID.equals(player.getUUID());
         // Whole-word boundary match for decorated / color-translated servers
         // (substring contains misattributed e.g. SteveAdmin to Steve)
         if (!match) {
             String s = senderName.getString();
             match = containsWholeName(s, player.getName().getString());
-            if (!match && player.networkHandler != null) {
-                var info = player.networkHandler.getPlayerListEntry(player.getUuid());
-                if (info != null && info.getDisplayName() != null) {
-                    String tab = info.getDisplayName().getString().trim();
+            if (!match && player.connection != null) {
+                var info = player.connection.getPlayerInfo(player.getUUID());
+                if (info != null && info.getTabListDisplayName() != null) {
+                    String tab = info.getTabListDisplayName().getString().trim();
                     match = !tab.isEmpty() && containsWholeName(s, tab);
                 }
             }

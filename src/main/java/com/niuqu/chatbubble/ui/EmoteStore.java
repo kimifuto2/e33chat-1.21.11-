@@ -2,9 +2,9 @@ package com.niuqu.chatbubble.ui;
 
 import com.niuqu.chatbubble.image.RasterImageDecoder;
 import net.fabricmc.loader.api.FabricLoader;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.texture.NativeImageBackedTexture;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.resources.Identifier;
 import org.slf4j.Logger;
 
 import java.io.File;
@@ -128,9 +128,9 @@ public final class EmoteStore {
             // NativeImage ownership transfers to the texture; never close it here.
             // Monotonic id: textures.size() reuses ids after removals, which
             // makes registerDynamicTexture return a stale texture for the new file.
-            Identifier tex = Identifier.of("e33chat", "emote_" + (textureSeq++));
-            MinecraftClient.getInstance().getTextureManager()
-                .registerTexture(tex, new NativeImageBackedTexture(() -> "e33chat_emote", dec.image()));
+            Identifier tex = Identifier.fromNamespaceAndPath("e33chat", "emote_" + (textureSeq++));
+            Minecraft.getInstance().getTextureManager()
+                .register(tex, new DynamicTexture(() -> "e33chat_emote", dec.image()));
             textures.put(f, tex);
             return tex;
         } catch (IOException e) {

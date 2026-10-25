@@ -1,6 +1,6 @@
 package com.niuqu.chatbubble.network;
 
-import net.minecraft.network.PacketByteBuf;
+import net.minecraft.network.FriendlyByteBuf;
 
 import java.util.List;
 
@@ -13,7 +13,7 @@ import java.util.List;
 public record ServerConfigDto(boolean useTpa, boolean historyEnabled, boolean templateDebug,
                               boolean mediaEnabled, boolean mediaAutoClean,
                               List<String> chatTemplates, List<String> whisperTemplates) {
-    public static void encode(ServerConfigDto dto, PacketByteBuf buf) {
+    public static void encode(ServerConfigDto dto, FriendlyByteBuf buf) {
         buf.writeBoolean(dto.useTpa);
         buf.writeBoolean(dto.historyEnabled);
         buf.writeBoolean(dto.templateDebug);
@@ -23,7 +23,7 @@ public record ServerConfigDto(boolean useTpa, boolean historyEnabled, boolean te
         ConfigSyncV2Payload.writeList(buf, dto.whisperTemplates);
     }
 
-    public static ServerConfigDto decode(PacketByteBuf buf) {
+    public static ServerConfigDto decode(FriendlyByteBuf buf) {
         boolean useTpa = buf.readBoolean();
         boolean history = buf.readBoolean();
         boolean debug = buf.readBoolean();

@@ -1,19 +1,20 @@
 package com.niuqu.chatbubble.ui;
+import com.mojang.blaze3d.platform.InputConstants;
 import com.niuqu.chatbubble.ChatBubbleScreen;
 
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.input.KeyInput;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.network.packet.c2s.play.ClientCommandC2SPacket;
-import net.minecraft.text.Text;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.input.KeyEvent;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.network.protocol.game.ServerboundPlayerCommandPacket;
+import net.minecraft.network.chat.Component;
 
 public class BedScreen extends Screen {
 
     private static Screen screenBeforeSleep;
 
     public BedScreen() {
-        super(Text.translatable("multiplayer.stopSleeping"));
+        super(Component.translatable("multiplayer.stopSleeping"));
     }
 
     public static void setScreenBeforeSleep(Screen screen) {
@@ -22,49 +23,49 @@ public class BedScreen extends Screen {
 
     @Override
     protected void init() {
-        addDrawableChild(ButtonWidget.builder(Text.translatable("multiplayer.stopSleeping"), b -> sendWakeUp())
-            .dimensions(width / 2 - 100, height - 40, 200, 20).build());
+        addRenderableWidget(Button.builder(Component.translatable("multiplayer.stopSleeping"), b -> sendWakeUp())
+            .bounds(width / 2 - 100, height - 40, 200, 20).build());
     }
 
     @Override
-    public void renderBackground(DrawContext g, int mouseX, int mouseY, float delta) {
+    public void extractBackground(GuiGraphicsExtractor raw, int mouseX, int mouseY, float delta) {
     }
 
     @Override
     public void tick() {
-        if (client == null || client.player == null || !client.player.isSleeping()) {
-            client.setScreen(null);
+        if (minecraft == null || minecraft.player == null || !minecraft.player.isSleeping()) {
+            minecraft.gui.setScreen(null);
             if (screenBeforeSleep instanceof ChatBubbleScreen) {
-                client.setScreen(screenBeforeSleep);
+                minecraft.gui.setScreen(screenBeforeSleep);
             }
             screenBeforeSleep = null;
         }
     }
 
     @Override
-    public boolean keyPressed(KeyInput input) {
+    public boolean keyPressed(KeyEvent input) {
         int keyCode = input.key();
-        int scanCode = input.scancode();
-        if (keyCode == org.lwjgl.glfw.GLFW.GLFW_KEY_ESCAPE) {
+        int scanCode = input.keycode();
+        if (keyCode == InputConstants.KEY_ESCAPE) {
             sendWakeUp();
             return true;
         }
-        if (client.options.chatKey.matchesKey(input)) {
-            client.setScreen(new ChatBubbleScreen(""));
+        if (minecraft.options.keyChat.matches(input)) {
+            minecraft.gui.setScreen(new ChatBubbleScreen(""));
             return true;
         }
         return super.keyPressed(input);
     }
 
     @Override
-    public boolean shouldPause() {
+    public boolean isPauseScreen() {
         return false;
     }
 
     private void sendWakeUp() {
-        if (client != null && client.player != null) {
-            client.player.networkHandler.sendPacket(
-                new ClientCommandC2SPacket(client.player, ClientCommandC2SPacket.Mode.STOP_SLEEPING));
+        if (minecraft != null && minecraft.player != null) {
+            minecraft.player.connection.send(
+                new ServerboundPlayerCommandPacket(minecraft.player, ServerboundPlayerCommandPacket.Action.STOP_SLEEPING));
         }
     }
 }

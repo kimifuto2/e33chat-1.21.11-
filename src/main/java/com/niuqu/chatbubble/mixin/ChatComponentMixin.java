@@ -7,14 +7,15 @@ import com.niuqu.chatbubble.ChatBubbleScreen;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.store.ChatMessageStore.SenderMeta;
 import com.niuqu.chatbubble.image.BracketCodec;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.font.TextRenderer;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.hud.ChatHud;
-import net.minecraft.client.gui.hud.MessageIndicator;
-import net.minecraft.network.message.MessageSignatureData;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.ChatComponent;
+import net.minecraft.client.multiplayer.chat.GuiMessageSource;
+import net.minecraft.client.multiplayer.chat.GuiMessageTag;
+import net.minecraft.network.chat.MessageSignature;
+import net.minecraft.network.chat.Component;
+import net.minecraft.ChatFormatting;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -22,17 +23,20 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.UUID;
 
-@Mixin(value = ChatHud.class, priority = 500)
+@Mixin(value = ChatComponent.class, priority = 500)
 public class ChatComponentMixin {
-    private Text lastComponent;
+    private Component lastComponent;
     private boolean e33chat$shifted;
     private boolean e33chat$reposting;
     private String lastRepostText;
     private long lastRepostTime;
 
-    @Inject(method = "render(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/client/font/TextRenderer;IIIZZ)V", at = @At("HEAD"), cancellable = true)
-    private void onRender(DrawContext context, TextRenderer textRenderer, int tickDelta, int mouseX, int mouseY,
-                          boolean focused, boolean hidden, CallbackInfo ci) {
+    // 26.3 splits GUI rendering into "extract -> deferred submit", so ChatComponent.render(...)
+    // became extractRenderState(GuiGraphicsExtractor, Font, int, int, int, ChatComponent$DisplayMode, boolean)
+    // (the last boolean is focused; the old `hidden` flag is folded into DisplayMode).
+    @Inject(method = "extractRenderState(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/gui/Font;IIILnet/minecraft/client/gui/components/ChatComponent$DisplayMode;Z)V", at = @At("HEAD"), cancellable = true)
+    private void onRender(GuiGraphicsExtractor context, Font font, int tickDelta, int mouseX, int mouseY,
+                          ChatComponent.DisplayMode mode, boolean focused, CallbackInfo ci) {
         // The mod replaces the vanilla chat surface with its own bubble panel + brief toasts,
         // so hide the vanilla ChatHud entirely whenever the mod is enabled (no duplicate chat).
         if (ChatBubbleClientSetup.config().enabled()) {
@@ -40,24 +44,21 @@ public class ChatComponentMixin {
         }
     }
 
-    @Inject(method = "render(Lnet/minecraft/client/gui/DrawContext;Lnet/minecraft/client/font/TextRenderer;IIIZZ)V", at = @At("RETURN"))
-    private void onRenderReturn(DrawContext context, TextRenderer textRenderer, int tickDelta, int mouseX, int mouseY,
-                                boolean focused, boolean hidden, CallbackInfo ci) {
+    @Inject(method = "extractRenderState(Lnet/minecraft/client/gui/GuiGraphicsExtractor;Lnet/minecraft/client/gui/Font;IIILnet/minecraft/client/gui/components/ChatComponent$DisplayMode;Z)V", at = @At("RETURN"))
+    private void onRenderReturn(GuiGraphicsExtractor context, Font font, int tickDelta, int mouseX, int mouseY,
+                                ChatComponent.DisplayMode mode, boolean focused, CallbackInfo ci) {
         if (e33chat$shifted) {
-            context.getMatrices().popMatrix();
+            context.pose().popMatrix();
         }
     }
 
-    @Inject(method = "addMessage(Lnet/minecraft/text/Text;)V",
+    // 26.3 keeps a single funnel: the private addMessage(Component, MessageSignature,
+    // GuiMessageSource, GuiMessageTag) called by addClientSystemMessage / addServerSystemMessage /
+    // addPlayerMessage. The old 1-arg and 3-arg overloads are gone, so this is the only capture point.
+    @Inject(method = "addMessage(Lnet/minecraft/network/chat/Component;Lnet/minecraft/network/chat/MessageSignature;Lnet/minecraft/client/multiplayer/chat/GuiMessageSource;Lnet/minecraft/client/multiplayer/chat/GuiMessageTag;)V",
             at = @At("HEAD"), cancellable = true)
-    private void onAddMessage(Text message, CallbackInfo ci) {
-        captureMessage(message, ci);
-    }
-
-    @Inject(method = "addMessage(Lnet/minecraft/text/Text;Lnet/minecraft/network/message/MessageSignatureData;Lnet/minecraft/client/gui/hud/MessageIndicator;)V",
-            at = @At("HEAD"), cancellable = true)
-    private void onAddMessageFull(Text message, MessageSignatureData signature,
-                                  MessageIndicator indicator, CallbackInfo ci) {
+    private void onAddMessageFull(Component message, MessageSignature signature, GuiMessageSource source,
+                                  GuiMessageTag indicator, CallbackInfo ci) {
         captureMessage(message, ci);
     }
 
@@ -65,15 +66,15 @@ public class ChatComponentMixin {
     //   <sender>[私聊] content   (whisper in/out, incl. self-whisper)
     //   <sender>[引用] content   (quote reply, detected via the echo's quoted flag)
     // The sender component keeps its style so colored nicknames/prefixes survive.
-    private void repostToVanilla(Text name, String content, boolean quoting) {
+    private void repostToVanilla(Component name, String content, boolean quoting) {
         // banner.quote/whisper carry a trailing space (banner prefix convention),
         // so content is appended without an extra separator.
-        Text tag = (quoting
-            ? Text.translatable("e33chat.banner.quote").formatted(Formatting.YELLOW)
-            : Text.translatable("e33chat.banner.whisper").formatted(Formatting.LIGHT_PURPLE));
-        Text reformatted = Text.empty()
-            .append(Text.literal("<")).append(name).append(Text.literal(">")).append(tag)
-            .append(Text.literal(content));
+        Component tag = (quoting
+            ? Component.translatable("e33chat.banner.quote").withStyle(ChatFormatting.YELLOW)
+            : Component.translatable("e33chat.banner.whisper").withStyle(ChatFormatting.LIGHT_PURPLE));
+        Component reformatted = Component.empty()
+            .append(Component.literal("<")).append(name).append(Component.literal(">")).append(tag)
+            .append(Component.literal(content));
         String repostStr = reformatted.getString();
         long nowMs = System.currentTimeMillis();
         // Server echoes a whisper twice (signed outgoing + incoming) within ~15ms;
@@ -88,23 +89,23 @@ public class ChatComponentMixin {
         e33chat$reposting = true;
         // 3-arg addMessage with a null indicator: the 1-arg overload forces
         // MessageIndicator.system(), which logs "[System] [CHAT]" and styles the line
-        ((ChatHud) (Object) this).addMessage(reformatted, null, null);
+        ((ChatComponent) (Object) this).addPlayerMessage(reformatted, null, null);
         e33chat$reposting = false;
     }
 
     // The vanilla chat gets the raw [[CICode,url=...]] line (long URL → spammy).
     // Rewrite it to a "[图片]" placeholder so the bubble renders the image while
     // the vanilla surface stays compact, independent of ChatImage being installed.
-    private void rewriteVanillaImageCode(Text finalComponent, CallbackInfo ci) {
-        Text placeholder = BracketCodec.toPlaceholderText(finalComponent);
+    private void rewriteVanillaImageCode(Component finalComponent, CallbackInfo ci) {
+        Component placeholder = BracketCodec.toPlaceholderText(finalComponent);
         if (placeholder == finalComponent) return; // no image code, nothing to do
         ci.cancel();
         e33chat$reposting = true;
-        ((ChatHud) (Object) this).addMessage(placeholder, null, null);
+        ((ChatComponent) (Object) this).addPlayerMessage(placeholder, null, null);
         e33chat$reposting = false;
     }
 
-    private void captureMessage(Text finalComponent, CallbackInfo ci) {
+    private void captureMessage(Component finalComponent, CallbackInfo ci) {
         if (!ChatBubbleClientSetup.config().enabled()) return;
         if (e33chat$reposting) return;
 
@@ -124,7 +125,7 @@ public class ChatComponentMixin {
             // Decorated name from the line itself, so this path matches the signed
             // echo path's meta.senderName() — otherwise the repost dedup guard sees
             // different strings (tab name vs chat-decorated name) and shows both
-            Text name = ChatMessageStore.extractWhisperDisplayName(finalComponent,
+            Component name = ChatMessageStore.extractWhisperDisplayName(finalComponent,
                 ChatMessageStore.ownDisplayName());
             // Vanilla outgoing lines carry only the target ("你悄悄地对X说" / "You
             // whisper to X") — ownDisplayName() then supplies our name. Either way
@@ -142,7 +143,7 @@ public class ChatComponentMixin {
             if (ChatMessageStore.isRecentDuplicate(text)) return;
             meta = new SenderMeta(
                 new UUID(0, 0),
-                Text.translatable("e33chat.sender.system"),
+                Component.translatable("e33chat.sender.system"),
                 finalComponent,
                 true,
                 null,
@@ -190,7 +191,7 @@ public class ChatComponentMixin {
 
         String rawStr = meta.rawContent().getString();
         String finalStr = finalComponent.getString();
-        Text content;
+        Component content;
         if (finalStr.contains(rawStr)) {
             content = meta.rawContent();
         } else {
@@ -201,7 +202,7 @@ public class ChatComponentMixin {
         // draws the picture). The vanilla chat still gets ChatImage's own
         // conversion via ChatImage's mixins, so both surfaces agree.
 
-        Text logComp = finalComponent, logContent = content;
+        Component logComp = finalComponent, logContent = content;
         SenderMeta logMeta = meta;
         ChatMessageStore.debugLog(() -> "[e33chat] Capture | final='" + logComp.getString() + "' | content='" + logContent.getString() + "' | whisper=" + logMeta.whisper() + " | partner=" + logMeta.whisperPartner() + " | isSystem=" + logMeta.isSystem());
         rewriteVanillaImageCode(finalComponent, ci);

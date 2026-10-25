@@ -3,7 +3,7 @@ package com.niuqu.chatbubble.image;
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
 import java.io.File;
 import java.util.ArrayDeque;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 
 /**
  * Serial upload pipeline for images: queue + worker thread + server-first /
@@ -76,7 +76,7 @@ public final class UploadQueue {
                     prep = new LocalImageSource.PreparedImage(job.bytes(), job.fileName());
                 }
                 if (prep == null) {
-                    MinecraftClient.getInstance().execute(() -> {
+                    Minecraft.getInstance().execute(() -> {
                         running = false;
                         cb.onFailure();
                         if (job.pendingText() != null) cb.onRestoreInput(job.pendingText());
@@ -89,7 +89,7 @@ public final class UploadQueue {
                 // Never let a worker crash leak into the queue: reset the latch so
                 // queued jobs keep draining and the failure is visible.
                 com.mojang.logging.LogUtils.getLogger().error("[e33chat] upload worker crashed", t);
-                MinecraftClient.getInstance().execute(() -> {
+                Minecraft.getInstance().execute(() -> {
                     running = false;
                     cb.onFailure();
                     if (job.pendingText() != null) cb.onRestoreInput(job.pendingText());
@@ -110,7 +110,7 @@ public final class UploadQueue {
             : ImageUploader.upload(prep.bytes(), prep.fileName(),
                 cfg.uploadUrl(), cfg.uploadField(), cfg.uploadExtra(), cfg.uploadResponse());
         com.mojang.logging.LogUtils.getLogger().info("[e33chat] upload {} -> {}", prep.fileName(), url == null ? "FAILED" : url);
-        MinecraftClient.getInstance().execute(() -> {
+        Minecraft.getInstance().execute(() -> {
             running = false;
             if (url == null) {
                 cb.onFailure();

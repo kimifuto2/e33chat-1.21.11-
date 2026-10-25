@@ -3,8 +3,8 @@ package com.niuqu.chatbubble.chat.capture;
 import com.niuqu.chatbubble.chat.MessagePresentation;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import java.util.UUID;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 
 /**
  * Whisper detection on the text layer (NCR-converted servers where the chat
@@ -18,11 +18,11 @@ public final class WhisperDetector {
     private WhisperDetector() {}
 
     public static ChatMessageStore.SenderMeta detectWhisperInSystemMessage(String text, String logTag) {
-        var connection = MinecraftClient.getInstance().player.networkHandler;
+        var connection = Minecraft.getInstance().player.connection;
         if (connection == null) return null;
         // G3: 消息嵌 legacy 色码（S§6t§beve）时整条剥 § 再做名字锚点匹配
         String clean = text.replaceAll("§.", "");
-        for (var info : connection.getPlayerList()) {
+        for (var info : connection.getOnlinePlayers()) {
             String profile = info.getProfile().name();
             for (String cand : ChatClassifier.nameCandidates(info)) {
                 int idx = clean.indexOf(cand);
@@ -33,8 +33,8 @@ public final class WhisperDetector {
                         ChatMessageStore.debugLog(() -> "[e33chat] System(" + logTag + ") | text='" + clean + "' | name=" + cand + " | content='" + content + "'");
                         return new ChatMessageStore.SenderMeta(
                             senderId,
-                            Text.literal(cand),
-                            Text.literal(content),
+                            Component.literal(cand),
+                            Component.literal(content),
                             false,
                             profile,
                             true, profile
@@ -54,8 +54,8 @@ public final class WhisperDetector {
                         ChatMessageStore.debugLog(() -> "[e33chat] System(" + logTag + "/cache) | text='" + clean + "' | name=" + sp + " | content='" + content + "'");
                         return new ChatMessageStore.SenderMeta(
                             su,
-                            Text.literal(sp),
-                            Text.literal(content),
+                            Component.literal(sp),
+                            Component.literal(content),
                             false,
                             sp,
                             true, sp

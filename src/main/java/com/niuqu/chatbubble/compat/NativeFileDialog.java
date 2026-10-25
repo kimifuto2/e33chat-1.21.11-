@@ -1,7 +1,7 @@
 package com.niuqu.chatbubble.compat;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.KeyMapping;
 
 import javax.swing.SwingUtilities;
 import java.awt.FileDialog;
@@ -23,11 +23,11 @@ public final class NativeFileDialog {
     public static void pickImage(java.util.function.Consumer<File> callback) {
         if (open) return;
         open = true;
-        KeyBinding.unpressAll();
-        MinecraftClient mc = MinecraftClient.getInstance();
+        KeyMapping.releaseAll();
+        Minecraft mc = Minecraft.getInstance();
         // MC keeps thinking the button is held while the dialog grabs input;
         // clear it so release state restores cleanly after the dialog closes
-        if (mc.mouse != null) ((com.niuqu.chatbubble.mixin.MouseHandlerAccessor) mc.mouse).e33chat$setActiveButton(null);
+        if (mc.mouseHandler != null) ((com.niuqu.chatbubble.mixin.MouseHandlerAccessor) mc.mouseHandler).e33chat$setActiveButton(null);
 
         Thread t = new Thread(() -> {
             AtomicReference<File> picked = new AtomicReference<>();

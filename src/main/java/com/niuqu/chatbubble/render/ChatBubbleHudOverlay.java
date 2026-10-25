@@ -11,10 +11,10 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.niuqu.chatbubble.chat.notification.MentionNotificationBanner;
 import com.niuqu.chatbubble.config.ChatBubbleConfig;
 import java.util.List;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 
 public class ChatBubbleHudOverlay {
 
@@ -28,7 +28,7 @@ public class ChatBubbleHudOverlay {
 
     private static Identifier chatIconTex() {
         String theme = Appearance.resolvedTheme().name().toLowerCase();
-        return Identifier.of("e33chat", "textures/gui/" + theme + "/chat_icon.png");
+        return Identifier.fromNamespaceAndPath("e33chat", "textures/gui/" + theme + "/chat_icon.png");
     }
 
     private static ChatBubbleTheme theme() {
@@ -37,26 +37,27 @@ public class ChatBubbleHudOverlay {
 
     private static ChatBubbleTheme.Colors c() { return Appearance.snapshot(); }
 
-    public static void render(DrawContext g) {
-        MinecraftClient mc = MinecraftClient.getInstance();
+    public static void render(GuiGraphicsExtractor raw) {
+        UiCanvas g = UiCanvas.of(raw);
+        Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.options == null) return;
         // F1 隐藏 HUD 时，本模组的聊天图标/提示条/通知横幅也一起隐藏（与原生 HUD 行为一致）
-        if (mc.options.hudHidden) return;
+        if (mc.gui.hud.isHidden()) return;
 
         g.getMatrices().pushMatrix();
         g.getMatrices().translate(0, 0);
 
         MentionNotificationBanner.INSTANCE.tick();
-        if (mc.currentScreen == null) {
+        if (mc.gui.screen() == null) {
             MentionNotificationBanner.INSTANCE.render(g,
-                mc.getWindow().getScaledWidth(),
-                mc.getWindow().getScaledHeight());
+                mc.getWindow().getGuiScaledWidth(),
+                mc.getWindow().getGuiScaledHeight());
         }
 
-        if (mc.currentScreen != null) { g.getMatrices().popMatrix(); return; }
+        if (mc.gui.screen() != null) { g.getMatrices().popMatrix(); return; }
 
-        String keyName = mc.options.chatKey.getBoundKeyLocalizedText().getString();
-        int screenH = mc.getWindow().getScaledHeight();
+        String keyName = mc.options.keyChat.getTranslatedKeyMessage().getString();
+        int screenH = mc.getWindow().getGuiScaledHeight();
         int x = 3;
         int iconY = screenH - ICON_S - 20;
         int textY = iconY + ICON_S + 1;
@@ -76,9 +77,9 @@ public class ChatBubbleHudOverlay {
             }
 
             String keyDisplay = "[" + keyName + "]";
-            int keyW = mc.textRenderer.getWidth(keyDisplay);
+            int keyW = mc.font.width(keyDisplay);
             int keyX = keyW > ICON_S ? x : x + (ICON_S - keyW) / 2;
-            g.drawText(mc.textRenderer, keyDisplay, keyX, textY, 0xFFFFFFFF, false);
+            g.drawText(mc.font, keyDisplay, keyX, textY, 0xFFFFFFFF, false);
         }
 
         g.getMatrices().popMatrix();
@@ -86,33 +87,34 @@ public class ChatBubbleHudOverlay {
 
     // Fabric's HUD layer draws behind the screen batch; screens that render over
     // it re-invoke this so the banner stays visible on top
-    public static void renderBannerForScreen(DrawContext g) {
-        MinecraftClient mc = MinecraftClient.getInstance();
+    public static void renderBannerForScreen(GuiGraphicsExtractor raw) {
+        UiCanvas g = UiCanvas.of(raw);
+        Minecraft mc = Minecraft.getInstance();
         if (mc.player == null || mc.options == null) return;
-        if (mc.currentScreen instanceof ChatBubbleScreen) {
+        if (mc.gui.screen() instanceof ChatBubbleScreen) {
             MentionNotificationBanner.INSTANCE.render(g,
-                mc.getWindow().getScaledWidth(),
-                mc.getWindow().getScaledHeight());
+                mc.getWindow().getGuiScaledWidth(),
+                mc.getWindow().getGuiScaledHeight());
         }
     }
 
     public static boolean isMouseOverIcon(double mx, double my) {
         if (cfg().hideChatIcon()) return false;
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.currentScreen != null) return false;
-        int screenH = mc.getWindow().getScaledHeight();
+        Minecraft mc = Minecraft.getInstance();
+        if (mc.gui.screen() != null) return false;
+        int screenH = mc.getWindow().getGuiScaledHeight();
         int iconY = screenH - ICON_S - 20;
-        return mx >= 3 && mx <= 3 + ICON_S && my >= iconY && my <= iconY + ICON_S + mc.textRenderer.fontHeight + 2;
+        return mx >= 3 && mx <= 3 + ICON_S && my >= iconY && my <= iconY + ICON_S + mc.font.lineHeight + 2;
     }
 
 
-    private static void drawIcon(DrawContext g, int x, int y) {
+    private static void drawIcon(UiCanvas g, int x, int y) {
         // getTexture 无缓存时自动 new ResourceTexture 懒加载（资源包可覆盖，F3+T 即时生效）
-        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, chatIconTex(), x, y, 0.0F, 0.0F, ICON_S, ICON_S, ICON_S, ICON_S);
+        g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, chatIconTex(), x, y, 0.0F, 0.0F, ICON_S, ICON_S, ICON_S, ICON_S);
     }
 
-    private static void drawScaledTip(DrawContext g, int x, int y, int disp) {
+    private static void drawScaledTip(UiCanvas g, int x, int y, int disp) {
         Identifier tex = ChatBubbleScreen.iconTex("private_tip");
-        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, tex, x, y, (float) SRC_U, (float) SRC_V, disp, disp, SRC_S, SRC_S, 16, 16);
+        g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, tex, x, y, (float) SRC_U, (float) SRC_V, disp, disp, SRC_S, SRC_S, 16, 16);
     }
 }

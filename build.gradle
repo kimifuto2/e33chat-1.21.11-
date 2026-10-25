@@ -1,5 +1,10 @@
 plugins {
-    id 'fabric-loom' version "${loom_version}"
+    // The 'net.fabricmc.fabric-loom' id (as opposed to the legacy 'fabric-loom') makes Loom
+    // construct its extension with disableObfuscation=true - verified in the bytecode of
+    // LoomGradleExtensionImpl.<init>: it calls PluginManager.hasPlugin("net.fabricmc.fabric-loom")
+    // and only then does CompileConfiguration.provideMinecraft take the NoRemapMappingConfiguration
+    // branch instead of demanding a non-empty 'mappings' configuration.
+    id 'net.fabricmc.fabric-loom' version "${loom_version}"
     id 'maven-publish'
 }
 
@@ -16,10 +21,15 @@ repositories {
 
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
-    modCompileOnly "com.terraformersmc:modmenu:${project.modmenu_version}"
+    // MC 26.x ships its own deobfuscated (Mojang-named) jar and its version json no longer
+    // contains client_mappings/server_mappings, so Loom 1.19 applies no mappings layer at all
+    // (declaring any `mappings ...` line makes it fail with "Failed to find official mojang
+    // mappings"). Ecosystem jars for 26.x are therefore already in Mojang names, and plain
+    // implementation/compileOnly replace the mod* configurations - this matches the official
+    // fabric-example-mod template for 26.3.
+    implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    compileOnly "com.terraformersmc:modmenu:${project.modmenu_version}"
     // WebP emote decoding via TwelveMonkeys ImageIO (picked up by RasterImageDecoder)
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
@@ -30,6 +40,11 @@ processResources {
     filesMatching('fabric.mod.json') { expand version: project.version }
 }
 
-tasks.withType(JavaCompile).configureEach { options.release = 21; options.encoding = 'UTF-8' }
-java { withSourcesJar(); toolchain.languageVersion = JavaLanguageVersion.of(21) }
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = 'UTF-8'
+    // javac stops at 100 diagnostics by default; the yarn -> Mojang port needs the full list
+    options.compilerArgs << '-Xmaxerrs' << '10000'
+}
+java { withSourcesJar(); toolchain.languageVersion = JavaLanguageVersion.of(25) }
 tasks.withType(Test).configureEach { useJUnitPlatform() }
