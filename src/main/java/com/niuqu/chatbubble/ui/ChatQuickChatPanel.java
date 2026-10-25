@@ -180,9 +180,9 @@ public class ChatQuickChatPanel {
             }
         }
 
-        // 26.3 起原版控件用 SDL 键号判左键（AbstractWidget.isValidClickButton = button()==1），
-        // 自造 MouseButtonEvent 必须传 1；传 0 会让 EditBox.mouseClicked 直接返回 false。
-        if (input.mouseClicked(new net.minecraft.client.input.MouseButtonEvent(mx, my, new net.minecraft.client.input.MouseButtonInfo(MouseButtons.SDL_LEFT, 0)), false))
+        // 26.2 仍是 GLFW 键号，原版控件判左键是 AbstractWidget.isValidClickButton = button()==0，
+        // 自造 MouseButtonEvent 传 0 才是左键（26.3 起改成了 SDL 的 1）。
+        if (input.mouseClicked(new net.minecraft.client.input.MouseButtonEvent(mx, my, new net.minecraft.client.input.MouseButtonInfo(MouseButtons.NATIVE_LEFT, 0)), false))
             return -2;
         return -1;
     }

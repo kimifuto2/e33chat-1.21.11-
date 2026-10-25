@@ -1017,7 +1017,7 @@ private float getBarAlpha() {
     @Override
     public boolean keyPressed(KeyEvent input) {
         int keyCode = input.key();
-        int scanCode = input.keycode();
+        int scanCode = input.scancode();
         int modifiers = input.modifiers();
         // Ctrl+C with a message-text selection copies the selected runs (one per
         // selected span, joined with '\n') and reuses the existing "copied" toast.
@@ -1501,7 +1501,7 @@ boolean inputHandled = this.input.mouseClicked(click, doubleClick);
             input.setValue(sc.command()); return true;
         }
         if (cev instanceof ClickEvent.OpenFile of) {
-            com.mojang.blaze3d.Blaze3D.openPath(of.file().toPath()); return true;
+            Util.getPlatform().openPath(of.file().toPath()); return true;
         }
         if (cev instanceof ClickEvent.OpenUrl ou) {
             // Local file:// links (e.g. legacy chatimage messages) are not
@@ -1511,7 +1511,7 @@ boolean inputHandled = this.input.mouseClicked(click, doubleClick);
             if (clickUrl != null && (clickUrl.startsWith("http://") || clickUrl.startsWith("https://"))) {
                 // Vanilla semantics: clicking a link OPENS it. This used to push the URL
                 // into chat as a message instead, so a link click sent it to everyone.
-                com.mojang.blaze3d.Blaze3D.openUri(ou.uri());
+                Util.getPlatform().openUri(ou.uri());
             }
             return true;
         }

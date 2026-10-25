@@ -45,7 +45,7 @@ public class BedScreen extends Screen {
     @Override
     public boolean keyPressed(KeyEvent input) {
         int keyCode = input.key();
-        int scanCode = input.keycode();
+        int scanCode = input.scancode();
         if (keyCode == InputConstants.KEY_ESCAPE) {
             sendWakeUp();
             return true;
