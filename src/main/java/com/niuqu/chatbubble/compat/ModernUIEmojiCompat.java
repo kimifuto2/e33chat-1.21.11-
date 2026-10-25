@@ -6,7 +6,7 @@ import java.lang.reflect.Method;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.gui.components.EditBox;
 import org.slf4j.Logger;
 
 /**
@@ -89,21 +89,21 @@ public final class ModernUIEmojiCompat {
      *
      * @return true if at least one shortcode was replaced
      */
-    public static boolean replaceIn(TextFieldWidget field) {
+    public static boolean replaceIn(EditBox field) {
         if (!isEnabled() || field == null) return false;
-        String text = field.getText();
+        String text = field.getValue();
         if (text.indexOf(':') < 0 || text.startsWith("/")) return false;
         boolean any = false;
         while (true) {
-            Matcher matcher = SHORTCODE_PATTERN.matcher(field.getText());
+            Matcher matcher = SHORTCODE_PATTERN.matcher(field.getValue());
             boolean replaced = false;
             while (matcher.find()) {
                 String shortcode = matcher.group();
                 String replacement = lookup(shortcode);
                 if (replacement != null) {
-                    field.setSelectionStart(matcher.start());
-                    field.setSelectionEnd(matcher.end());
-                    field.write(replacement);
+                    field.setCursorPosition(matcher.start());
+                    field.setHighlightPos(matcher.end());
+                    field.insertText(replacement);
                     any = true;
                     replaced = true;
                     break;

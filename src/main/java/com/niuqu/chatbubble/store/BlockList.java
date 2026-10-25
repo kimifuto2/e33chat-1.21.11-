@@ -1,7 +1,7 @@
 package com.niuqu.chatbubble.store;
 
 import java.util.List;
-import net.minecraft.text.Text;
+import net.minecraft.network.chat.Component;
 
 /**
  * Blocked-player matching rules (pure predicates, no state).
@@ -31,7 +31,7 @@ public final class BlockList {
 
     // senderName (tab-list display name) as fallback covers nickname plugins where
     // the chat line carries the decorated name and rawPlayerName is the profile name
-    public static boolean isPlayerBlocked(String rawPlayerName, Text senderName, List<? extends String> blocked) {
+    public static boolean isPlayerBlocked(String rawPlayerName, Component senderName, List<? extends String> blocked) {
         if (blocked == null || blocked.isEmpty()) return false;
         if (matchesBlocked(rawPlayerName, blocked)) return true;
         return senderName != null && matchesBlocked(senderName.getString(), blocked);

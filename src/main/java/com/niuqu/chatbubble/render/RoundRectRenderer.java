@@ -1,11 +1,11 @@
 package com.niuqu.chatbubble.render;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gl.RenderPipelines;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.texture.NativeImageBackedTexture;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.renderer.RenderPipelines;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.resources.Identifier;
 
 import java.util.ArrayDeque;
 import java.util.HashMap;
@@ -36,8 +36,8 @@ public class RoundRectRenderer {
     }
 
     private static void clearCache() {
-        var tm = MinecraftClient.getInstance().getTextureManager();
-        for (Identifier id : maskCache.values()) tm.destroyTexture(id);
+        var tm = Minecraft.getInstance().getTextureManager();
+        for (Identifier id : maskCache.values()) tm.release(id);
         maskCache.clear();
         cacheOrder.clear();
         maskImages.clear();
@@ -52,7 +52,7 @@ public class RoundRectRenderer {
         if (cached != null) return cached;
         if (maskCache.size() >= MAX_CACHE) clearCache();
 
-        Identifier id = Identifier.of("e33chat", "round_" + key);
+        Identifier id = Identifier.fromNamespaceAndPath("e33chat", "round_" + key);
         NativeImage img = new NativeImage(w, h, true);
         float rx = w / 2f, ry = h / 2f, r = radius, rr = radius;
         for (int y = 0; y < h; y++) {
@@ -67,18 +67,18 @@ public class RoundRectRenderer {
                 float dist = (float) Math.sqrt(dx * dx + dy * dy) + Math.min(Math.max(qx, qy), 0f) - r;
                 float alpha = Math.max(0f, Math.min(1f, 0.5f - dist));
                 int a = Math.round(alpha * 255f);
-                img.setColorArgb(x, y, (a << 24) | 0x00FFFFFF);
+                img.setPixel(x, y, (a << 24) | 0x00FFFFFF);
             }
         }
-        MinecraftClient.getInstance().getTextureManager()
-            .registerTexture(id, new NativeImageBackedTexture(() -> "e33chat_round_rect", img));
+        Minecraft.getInstance().getTextureManager()
+            .register(id, new DynamicTexture(() -> "e33chat_round_rect", img));
         maskCache.put(key, id);
         maskImages.put(key, img);
         cacheOrder.addLast(key);
         return id;
     }
 
-    public static void fill(DrawContext g, int x1, int y1, int x2, int y2, float radius, int argb) {
+    public static void fill(UiCanvas g, int x1, int y1, int x2, int y2, float radius, int argb) {
         int w = x2 - x1, h = y2 - y1;
         if (w <= 0 || h <= 0) return;
         int rad = Math.max(1, Math.round(radius));
@@ -100,7 +100,7 @@ public class RoundRectRenderer {
      * @param bg      interior colour (already alpha-blended)
      * @param border  border ring colour (already alpha-blended)
      */
-    public static void panel(DrawContext g, int x, int y, int w, int h, float radius, int bg, int border) {
+    public static void panel(UiCanvas g, int x, int y, int w, int h, float radius, int bg, int border) {
         if (w <= 0 || h <= 0) return;
         RoundRectRenderer.fill(g, x, y, x + w, y + h, radius, border);
         RoundRectRenderer.fill(g, x + 1, y + 1, x + w - 1, y + h - 1, Math.max(1f, radius - 1), bg);

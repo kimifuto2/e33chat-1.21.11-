@@ -7,7 +7,7 @@ import com.niuqu.chatbubble.network.MediaUploadAckPayload;
 import com.niuqu.chatbubble.network.MediaUploadPayload;
 import com.niuqu.chatbubble.server.DiskMediaStore;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 import org.slf4j.Logger;
 
 import java.util.Map;
@@ -110,7 +110,7 @@ public final class MediaClient {
             byte[] chunk = new byte[len];
             System.arraycopy(bytes, from, chunk, 0, len);
             final int idx = i;
-            MinecraftClient.getInstance().execute(() -> {
+            Minecraft.getInstance().execute(() -> {
                 try {
                     ClientPlayNetworking.send(new MediaUploadPayload(uploadId, idx, totalChunks,
                         bytes.length, contentType, chunk));
@@ -136,7 +136,7 @@ public final class MediaClient {
         if (!ClientPlayNetworking.canSend(MediaRequestPayload.ID)) return null;
         CompletableFuture<byte[]> done = new CompletableFuture<>();
         FETCHES.put(mediaId, done);
-        MinecraftClient.getInstance().execute(() -> {
+        Minecraft.getInstance().execute(() -> {
             try {
                 ClientPlayNetworking.send(new MediaRequestPayload(mediaId));
             } catch (Throwable t) {

@@ -5,8 +5,8 @@ import com.niuqu.chatbubble.store.ChatMessageStore;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.UUID;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 
 /**
  * Unified guard-layer orchestration shared by the system/disguised channels.
@@ -19,8 +19,8 @@ public final class ChatPipeline {
     private ChatPipeline() {}
 
     // Pulls styled server prefixes out of the decorated line: "[Group]<Steve> hi" -> "[Group]Steve"
-    public static Text extractDecoratedName(Text fullLine, String contentStr,
-                                                 String rawName, Text fallback) {
+    public static Component extractDecoratedName(Component fullLine, String contentStr,
+                                                 String rawName, Component fallback) {
         if (contentStr == null || contentStr.isEmpty()) return fallback;
         String fullStr = fullLine.getString();
         int idx = fullStr.lastIndexOf(contentStr);
@@ -28,8 +28,8 @@ public final class ChatPipeline {
         return cleanNameArea(fullLine, 0, idx, rawName, fallback);
     }
 
-    public static Text cleanNameArea(Text fullLine, int a, int b,
-                                          String rawName, Text fallback) {
+    public static Component cleanNameArea(Component fullLine, int a, int b,
+                                          String rawName, Component fallback) {
         String fullStr = fullLine.getString();
         while (a < b && Character.isWhitespace(fullStr.charAt(a))) a++;
         while (b > a) {
@@ -38,13 +38,13 @@ public final class ChatPipeline {
             else break;
         }
         if (b <= a) return fallback;
-        Text nameArea = ChatMessageStore.sliceStyled(fullLine, a, b);
+        Component nameArea = ChatMessageStore.sliceStyled(fullLine, a, b);
         String ns = nameArea.getString();
         if (rawName != null && !rawName.isEmpty()) {
             String bracketed = "<" + rawName + ">";
             int p = ns.indexOf(bracketed);
             if (p >= 0) {
-                var out = Text.empty();
+                var out = Component.empty();
                 if (p > 0) out.append(ChatMessageStore.sliceStyled(nameArea, 0, p));
                 out.append(ChatMessageStore.sliceStyled(nameArea, p + 1, p + 1 + rawName.length()));
                 int tail = p + bracketed.length();
@@ -65,11 +65,11 @@ public final class ChatPipeline {
      * (or is a broadcast sentence with a whitespace-only gap).
      */
     public static ChatMessageStore.SenderMeta tryParsePlayerLine(
-            Text message, String text, String logTag) {
-        var connection = MinecraftClient.getInstance().player.networkHandler;
+            Component message, String text, String logTag) {
+        var connection = Minecraft.getInstance().player.connection;
         if (connection == null) return null;
         var namesSet = new LinkedHashSet<String>();
-        connection.getPlayerList().forEach(info -> {
+        connection.getOnlinePlayers().forEach(info -> {
             for (String cand : ChatClassifier.nameCandidates(info)) namesSet.add(cand);
         });
         namesSet.addAll(ChatMessageStore.knownNameVariants());
@@ -87,7 +87,7 @@ public final class ChatPipeline {
             ChatMessageStore.debugLog(() -> "[e33chat] " + logTag + "(line skip: broadcast sentence) | text='" + text + "'");
             return null;
         }
-        var info = connection.getPlayerList().stream()
+        var info = connection.getOnlinePlayers().stream()
             .filter(i -> {
                 for (String cand : ChatClassifier.nameCandidates(i))
                     if (cand.equals(pl.playerName())) return true;
@@ -100,9 +100,9 @@ public final class ChatPipeline {
             UUID su = ChatMessageStore.findSeenUuid(pl.playerName());
             uid = su != null ? su : new UUID(0, 0);
         }
-        Text displayName = extractDecoratedName(message, pl.content(), pl.playerName(),
-            Text.literal((text.substring(0, nameIdx) + pl.playerName()).trim()));
-        Text contentComp = ChatMessageStore.sliceStyled(message, contentStart, text.length());
+        Component displayName = extractDecoratedName(message, pl.content(), pl.playerName(),
+            Component.literal((text.substring(0, nameIdx) + pl.playerName()).trim()));
+        Component contentComp = ChatMessageStore.sliceStyled(message, contentStart, text.length());
         ChatMessageStore.debugLog(() -> "[e33chat] " + logTag + "(player line) | name=" + pl.playerName() + " | content='" + pl.content() + "'");
         return new ChatMessageStore.SenderMeta(
             uid, displayName, contentComp, false,

@@ -1,9 +1,9 @@
 package com.niuqu.chatbubble.network;
 
-import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.util.Identifier;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.Identifier;
 
 /**
  * C2S：客户端右键「引用」时把被引用消息的信息同步给服务端；服务端在广播
@@ -26,17 +26,17 @@ import net.minecraft.util.Identifier;
  */
 public record QuoteSyncPayload(String quotedSenderName, String quotedContent,
                                String messageHash, String quotedHash)
-        implements CustomPayload {
+        implements CustomPacketPayload {
 
-    public static final CustomPayload.Id<QuoteSyncPayload> ID =
-        new CustomPayload.Id<>(Identifier.of("e33chat", "quote_sync"));
+    public static final CustomPacketPayload.Type<QuoteSyncPayload> ID =
+        new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("e33chat", "quote_sync"));
 
-    public static final PacketCodec<PacketByteBuf, QuoteSyncPayload> CODEC = PacketCodec.of(
+    public static final StreamCodec<FriendlyByteBuf, QuoteSyncPayload> CODEC = StreamCodec.ofMember(
         (value, buf) -> {
-            buf.writeString(str(value.quotedSenderName));
-            buf.writeString(str(value.quotedContent));
-            buf.writeString(str(value.messageHash));
-            buf.writeString(str(value.quotedHash));
+            buf.writeUtf(str(value.quotedSenderName));
+            buf.writeUtf(str(value.quotedContent));
+            buf.writeUtf(str(value.messageHash));
+            buf.writeUtf(str(value.quotedHash));
         },
         buf -> {
             try {
@@ -55,14 +55,14 @@ public record QuoteSyncPayload(String quotedSenderName, String quotedContent,
     private static String str(String s) { return s == null ? "" : s; }
 
     /** 读不到（旧版只发了 3 个字段）或读损坏时返回空串，不抛异常。 */
-    private static String readStringOrEmpty(PacketByteBuf buf) {
+    private static String readStringOrEmpty(FriendlyByteBuf buf) {
         try {
-            return buf.isReadable() ? buf.readString() : "";
+            return buf.isReadable() ? buf.readUtf() : "";
         } catch (Throwable t) {
             return "";
         }
     }
 
     @Override
-    public Id<QuoteSyncPayload> getId() { return ID; }
+    public Type<QuoteSyncPayload> type() { return ID; }
 }

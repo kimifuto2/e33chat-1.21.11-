@@ -3,9 +3,9 @@ package com.niuqu.chatbubble.chat.capture;
 import com.niuqu.chatbubble.config.ChatBubbleConfig;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import java.util.UUID;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.PlayerListEntry;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.PlayerInfo;
+import net.minecraft.network.chat.Component;
 
 /**
  * Guard 0: deterministic routing by vanilla translation key, plus the player
@@ -19,11 +19,11 @@ public final class ChatClassifier {
 
     // Nick plugins put the tab-list display name in chat instead of the profile name;
     // legacy plugins may embed section-sign color codes in names, so offer stripped variants too
-    public static String[] nameCandidates(PlayerListEntry info) {
+    public static String[] nameCandidates(PlayerInfo info) {
         var out = new java.util.LinkedHashSet<String>();
         String profile = info.getProfile().name();
         addNameVariants(out, profile);
-        var tab = info.getDisplayName();
+        var tab = info.getTabListDisplayName();
         if (tab != null) addNameVariants(out, tab.getString().trim());
         return out.toArray(new String[0]);
     }
@@ -39,8 +39,8 @@ public final class ChatClassifier {
     // which tell-click would wrongly claim as chat — keep them as system messages.
     // chat.type.admin is the op echo "[Steve: Teleported ...]",
     // announcement/emote are /say and /me — same trap
-    public static boolean isVanillaBroadcast(Text message) {
-        if (message.getContent() instanceof net.minecraft.text.TranslatableTextContent tc) {
+    public static boolean isVanillaBroadcast(Component message) {
+        if (message.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents tc) {
             String key = tc.getKey();
             return key.startsWith("chat.type.advancement.")
                 || key.startsWith("death.")
@@ -54,14 +54,14 @@ public final class ChatClassifier {
         return false;
     }
 
-    public static Text argAsComponent(Object arg) {
-        return arg instanceof Text c ? c : Text.literal(String.valueOf(arg));
+    public static Component argAsComponent(Object arg) {
+        return arg instanceof Component c ? c : Component.literal(String.valueOf(arg));
     }
 
-    public static PlayerListEntry resolveOnlinePlayer(String displayName) {
-        var player = MinecraftClient.getInstance().player;
-        if (player == null || player.networkHandler == null || displayName.isEmpty()) return null;
-        var online = player.networkHandler.getPlayerList();
+    public static PlayerInfo resolveOnlinePlayer(String displayName) {
+        var player = Minecraft.getInstance().player;
+        if (player == null || player.connection == null || displayName.isEmpty()) return null;
+        var online = player.connection.getOnlinePlayers();
         for (var info : online) {
             for (String cand : nameCandidates(info)) {
                 if (cand.equals(displayName)) return info;
@@ -70,7 +70,7 @@ public final class ChatClassifier {
         // Team/plugin decorations wrap the name ("[Title]Steve") — longest match wins
         // so "Steve2" is never claimed by "Steve". Min length 3 keeps 1-2 char names
         // from substring-matching random text when the real sender is offline
-        PlayerListEntry best = null;
+        PlayerInfo best = null;
         int bestLen = 0;
         for (var info : online) {
             for (String cand : nameCandidates(info)) {
@@ -88,14 +88,14 @@ public final class ChatClassifier {
     // so the key survives conversion. Unknown keys fall through to the heuristics below.
 
     /** @return true when the message was routed (pending meta set / suppressed). */
-    public static boolean classifyByKey(Text message) {
-        if (!(message.getContent() instanceof net.minecraft.text.TranslatableTextContent tc)) return false;
+    public static boolean classifyByKey(Component message) {
+        if (!(message.getContents() instanceof net.minecraft.network.chat.contents.TranslatableContents tc)) return false;
         String key = tc.getKey();
         Object[] args = tc.getArgs();
 
         if (key.equals("commands.message.display.incoming") && args.length >= 2) {
-            Text name = argAsComponent(args[0]);
-            Text content = argAsComponent(args[1]);
+            Component name = argAsComponent(args[0]);
+            Component content = argAsComponent(args[1]);
             String displayName = name.getString().replaceAll("§.", "").trim();
             var info = resolveOnlinePlayer(displayName);
             String profile = info != null ? info.getProfile().name() : displayName;
@@ -112,23 +112,23 @@ public final class ChatClassifier {
                 ChatMessageStore.debugLog(() -> "[e33chat] Key(whisper echo suppressed)");
                 return true;
             }
-            var player = MinecraftClient.getInstance().player;
+            var player = Minecraft.getInstance().player;
             if (player != null && args.length >= 2) {
                 // /msg sent outside our UI (another mod, key bind) — no local bubble exists
                 String partner = argAsComponent(args[0]).getString().replaceAll("§.", "").trim();
-                Text content = argAsComponent(args[1]);
+                Component content = argAsComponent(args[1]);
                 String own = player.getName().getString();
                 ChatMessageStore.debugLog(() -> "[e33chat] Key(whisper out) | partner=" + partner + " | content='" + content.getString() + "'");
-                ChatMessageStore.setPendingMeta(new ChatMessageStore.SenderMeta(player.getUuid(),
-                    Text.literal(own), content, false, own, true, partner));
+                ChatMessageStore.setPendingMeta(new ChatMessageStore.SenderMeta(player.getUUID(),
+                    Component.literal(own), content, false, own, true, partner));
                 return true;
             }
             return false;
         }
 
         if (key.equals("chat.type.text") && args.length >= 2) {
-            Text name = argAsComponent(args[0]);
-            Text content = argAsComponent(args[1]);
+            Component name = argAsComponent(args[0]);
+            Component content = argAsComponent(args[1]);
             String contentStr = content.getString();
             // Xaero shares waypoint data as chat — converted servers wrap it in chat.type.text
             if (contentStr.startsWith("xaero-waypoint:")
@@ -136,7 +136,7 @@ public final class ChatClassifier {
                 || contentStr.startsWith("xaero_waypoint_add:")) {
                 ChatMessageStore.debugLog(() -> "[e33chat] Key(waypoint data) -> system");
                 ChatMessageStore.setPendingMeta(new ChatMessageStore.SenderMeta(new UUID(0, 0),
-                    Text.translatable("e33chat.sender.system"), message, true, null, false, null));
+                    Component.translatable("e33chat.sender.system"), message, true, null, false, null));
                 return true;
             }
             String displayName = name.getString().replaceAll("§.", "").trim();
@@ -165,7 +165,7 @@ public final class ChatClassifier {
             boolean isSystem = com.niuqu.chatbubble.ChatBubbleClientSetup.config() == null || !com.niuqu.chatbubble.ChatBubbleClientSetup.config().systemChatAsBubble();
             ChatMessageStore.debugLog(() -> "[e33chat] Key(broadcast) | key=" + key);
             ChatMessageStore.setPendingMeta(new ChatMessageStore.SenderMeta(new UUID(0, 0),
-                Text.translatable("e33chat.sender.system"), message, isSystem, null, false, null));
+                Component.translatable("e33chat.sender.system"), message, isSystem, null, false, null));
             return true;
         }
 

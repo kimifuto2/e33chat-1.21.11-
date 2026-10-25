@@ -4,10 +4,11 @@ import com.niuqu.chatbubble.texture.ColoredTextureRenderer;
 import com.niuqu.chatbubble.render.ChatBubbleTheme;
 import com.niuqu.chatbubble.ChatBubbleScreen;
 
-import net.minecraft.client.font.TextRenderer;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.text.Text;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.gui.Font;
+import com.niuqu.chatbubble.render.UiCanvas;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 
 import java.util.function.Function;
 
@@ -26,8 +27,8 @@ public class ChatSettingsMenu {
         else visible = false;
     }
 
-    public void render(DrawContext g, int mouseX, int mouseY,
-            TextRenderer font, ChatBubbleTheme.Colors c,
+    public void render(UiCanvas g, int mouseX, int mouseY,
+            Font font, ChatBubbleTheme.Colors c,
             int panelX, int panelW, int barTop,
             Function<String, Identifier> iconTex, float alpha) {
         if (!visible) return;
@@ -46,10 +47,10 @@ public class ChatSettingsMenu {
             iconTex.apply("theme"), iconTex.apply("settings")
         };
         String[] labels = {
-            Text.translatable("e33chat.menu.search").getString(),
-            Text.translatable("e33chat.menu.quick_chat").getString(),
-            Text.translatable("e33chat.menu.theme").getString(),
-            Text.translatable("e33chat.menu.settings").getString()
+            Component.translatable("e33chat.menu.search").getString(),
+            Component.translatable("e33chat.menu.quick_chat").getString(),
+            Component.translatable("e33chat.menu.theme").getString(),
+            Component.translatable("e33chat.menu.settings").getString()
         };
 
         for (int i = 0; i < COUNT; i++) {
@@ -60,7 +61,7 @@ public class ChatSettingsMenu {
                 com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.popupHover(), a255));
             ChatBubbleScreen.drawTextureIconAlpha(g, icons[i], px + 3, ry + 2, 14, alpha);
             int maxTextW = W - 22;
-            String label = font.trimToWidth(labels[i], maxTextW);
+            String label = font.plainSubstrByWidth(labels[i], maxTextW);
             g.drawText(font, label, px + 20, ry + 4, com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.textPrimary(), a255), false);
         }
     }

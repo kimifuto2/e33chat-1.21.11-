@@ -2,6 +2,7 @@ package com.niuqu.chatbubble.config;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 
 import com.niuqu.chatbubble.chat.TemplateMatcher;
+import com.niuqu.chatbubble.input.MouseButtons;
 import com.niuqu.chatbubble.network.ServerConfigSavePayload;
 import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.render.ChatBubbleTheme;
@@ -9,18 +10,19 @@ import com.niuqu.chatbubble.texture.ColoredTextureRenderer;
 import com.niuqu.chatbubble.texture.UiElement;
 import com.niuqu.chatbubble.texture.UiTextureManager;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.Click;
-import net.minecraft.client.gui.Element;
-import net.minecraft.client.gui.screen.ConfirmScreen;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.client.gui.widget.TextFieldWidget;
-import net.minecraft.screen.ScreenTexts;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import com.niuqu.chatbubble.render.UiCanvas;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.gui.components.events.GuiEventListener;
+import net.minecraft.client.gui.screens.ConfirmScreen;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.network.chat.CommonComponents;
+import net.minecraft.network.chat.Component;
 import net.minecraft.util.Util;
-import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.Mth;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -96,7 +98,7 @@ public class ServerConfigScreen extends Screen {
     private Row genInputRow;
     private String previewChatResult = "", previewWhisperResult = "";
     // 模板行输入时实时校验的错误（box → 错误文本）；rebuild 时清空
-    private final java.util.Map<TextFieldWidget, String> boxErrors = new java.util.LinkedHashMap<>();
+    private final java.util.Map<EditBox, String> boxErrors = new java.util.LinkedHashMap<>();
     // 从消息生成成功后，把示例消息代入预览框（重建后填入一次）
     private String pendingPreviewText;
 
@@ -107,15 +109,15 @@ public class ServerConfigScreen extends Screen {
     // 右区行：label 左对齐 optLabelX；widgets 右对齐 inputX（模板行的 ✕ 例外：紧跟 label 后）
     // extraText 渲染在行内下半部（预览结果）；tooltipKey 非空时悬停显示 key+".desc"
     // title=true 时 label 按分区标题样式画（灰字 + 右侧延伸分割线）
-    private record Row(Text label, List<Element> widgets,
+    private record Row(Component label, List<GuiEventListener> widgets,
                        String extraText, int height, String tooltipKey, boolean title) {}
     private final List<Row> rows = new ArrayList<>();
-    private ButtonWidget doneBtn, exitBtn, saveBtn;
+    private Button doneBtn, exitBtn, saveBtn;
 
     public ServerConfigScreen(Screen lastScreen, boolean useTpa, boolean history, boolean debug,
                               boolean mediaEnabled, boolean mediaAutoClean,
                               List<String> chat, List<String> whisper) {
-        super(Text.translatable("e33chat.server.title"));
+        super(Component.translatable("e33chat.server.title"));
         this.lastScreen = lastScreen;
         initUseTpa = useTpa;
         initHistory = history;
@@ -164,22 +166,22 @@ public class ServerConfigScreen extends Screen {
     }
 
     // ===== 行构建：widgets 必须注册为 renderable，否则不渲染也不响应点击 =====
-    private <T extends net.minecraft.client.gui.widget.ClickableWidget> T reg(T w) {
-        return addDrawableChild(w);
+    private <T extends net.minecraft.client.gui.components.AbstractWidget> T reg(T w) {
+        return addRenderableWidget(w);
     }
 
-    private Row row(Text label, List<Element> widgets, String extraText, String tooltipKey) {
-        for (Element w : widgets) {
-            if (w instanceof net.minecraft.client.gui.widget.ClickableWidget cw) addDrawableChild(cw);
+    private Row row(Component label, List<GuiEventListener> widgets, String extraText, String tooltipKey) {
+        for (GuiEventListener w : widgets) {
+            if (w instanceof net.minecraft.client.gui.components.AbstractWidget cw) addRenderableWidget(cw);
         }
         return new Row(label, widgets, extraText, ROW_H, tooltipKey, false);
     }
 
-    private Row textRow(Text label, int height) {
+    private Row textRow(Component label, int height) {
         return new Row(label, List.of(), null, height, null, false);
     }
 
-    private Row titleRow(Text label) {
+    private Row titleRow(Component label) {
         return new Row(label, List.of(), null, ROW_H, null, true);
     }
 
@@ -187,18 +189,18 @@ public class ServerConfigScreen extends Screen {
         rows.clear();
         switch (selectedCat) {
             case 0 -> {
-                rows.add(row(Text.translatable("e33chat.server.use_tpa"),
+                rows.add(row(Component.translatable("e33chat.server.use_tpa"),
                     List.of(mkToggle(() -> useTpaV, nv -> useTpaV = nv)), null, "e33chat.server.use_tpa"));
-                rows.add(row(Text.translatable("e33chat.server.history"),
+                rows.add(row(Component.translatable("e33chat.server.history"),
                     List.of(mkToggle(() -> historyV, nv -> historyV = nv)), null, "e33chat.server.history"));
-                rows.add(row(Text.translatable("e33chat.server.media_enabled"),
+                rows.add(row(Component.translatable("e33chat.server.media_enabled"),
                     List.of(mkToggle(() -> mediaV, nv -> mediaV = nv)), null, "e33chat.server.media_enabled"));
-                rows.add(row(Text.translatable("e33chat.server.media_auto_clean"),
+                rows.add(row(Component.translatable("e33chat.server.media_auto_clean"),
                     List.of(mkToggle(() -> autoCleanV, nv -> autoCleanV = nv)), null, "e33chat.server.media_auto_clean"));
             }
             case 1 -> buildTemplateRows(chatV, true);
             case 2 -> buildTemplateRows(whisperV, false);
-            case 3 -> rows.add(row(Text.translatable("e33chat.server.template_debug"),
+            case 3 -> rows.add(row(Component.translatable("e33chat.server.template_debug"),
                 List.of(mkToggle(() -> debugV, nv -> debugV = nv)), null, "e33chat.server.template_debug"));
             case 4 -> buildTutorialRows();
         }
@@ -208,80 +210,80 @@ public class ServerConfigScreen extends Screen {
         // 模板行：标签(左) + [编辑框][✕](右对齐到控件右缘线 previewX-8，与其他行控件右缘对齐)
         for (int i = 0; i < list.size(); i++) {
             int idx = i;
-            Text label = Text.translatable("e33chat.server.template_n", i + 1);
-            TextFieldWidget box = mkBox(previewX() - 8 - TEMPLATE_INPUT_W - 24, TEMPLATE_INPUT_W);
-            box.setText(list.get(idx));
-            box.setChangedListener(s -> {
+            Component label = Component.translatable("e33chat.server.template_n", i + 1);
+            EditBox box = mkBox(previewX() - 8 - TEMPLATE_INPUT_W - 24, TEMPLATE_INPUT_W);
+            box.setValue(list.get(idx));
+            box.setResponder(s -> {
                 if (idx < list.size()) list.set(idx, s);
                 // 实时校验：编译失败即时红字提示
                 var r = TemplateMatcher.compile(s);
                 if (r.template() == null) boxErrors.put(box, r.error());
                 else boxErrors.remove(box);
             });
-            ButtonWidget rm = ButtonWidget.builder(Text.literal("✕"), b -> { list.remove(idx); rebuild(); })
-                .dimensions(previewX() - 8 - 20, 0, 20, 20).build();
+            Button rm = Button.builder(Component.literal("✕"), b -> { list.remove(idx); rebuild(); })
+                .bounds(previewX() - 8 - 20, 0, 20, 20).build();
             rows.add(new Row(label, List.of(reg(rm), reg(box)), null, ROW_H,
                 "e33chat.server.template_n", false));
         }
         // 操作行：添加 / 从消息生成 各 90px，从右往右对齐到控件右缘线
-        ButtonWidget add = ButtonWidget.builder(Text.translatable("e33chat.server.add"), b -> { list.add(""); rebuild(); })
-            .dimensions(btnLeft(), 0, BUTTON_W, 20).build();
+        Button add = Button.builder(Component.translatable("e33chat.server.add"), b -> { list.add(""); rebuild(); })
+            .bounds(btnLeft(), 0, BUTTON_W, 20).build();
         if (chat) {
-            ButtonWidget genOpen = ButtonWidget.builder(Text.translatable("e33chat.server.gen_open"),
-                b -> { genVisible = true; rebuild(); }).dimensions(btnRight(), 0, BUTTON_W, 20).build();
-            rows.add(row(Text.translatable("e33chat.server.actions"), List.of(add, genOpen), null, "e33chat.server.actions"));
+            Button genOpen = Button.builder(Component.translatable("e33chat.server.gen_open"),
+                b -> { genVisible = true; rebuild(); }).bounds(btnRight(), 0, BUTTON_W, 20).build();
+            rows.add(row(Component.translatable("e33chat.server.actions"), List.of(add, genOpen), null, "e33chat.server.actions"));
             if (genVisible) {
-                TextFieldWidget genBox = mkBox(inputX(), INPUT_W);
-                genBox.setText(genText);
-                genBox.setChangedListener(s -> { genText = s; genError = null; });
-                rows.add(genInputRow = row(Text.translatable("e33chat.server.gen"), List.of(genBox), null, "e33chat.server.gen"));
-                ButtonWidget genOk = ButtonWidget.builder(Text.translatable("e33chat.server.gen_confirm"),
-                    b -> generateFromMessage()).dimensions(btnLeft(), 0, BUTTON_W, 20).build();
-                ButtonWidget genCancel = ButtonWidget.builder(Text.translatable("e33chat.server.gen_cancel"),
-                    b -> { genVisible = false; genError = null; rebuild(); }).dimensions(btnRight(), 0, BUTTON_W, 20).build();
-                rows.add(row(Text.translatable("e33chat.server.gen"), List.of(genOk, genCancel), null, null));
+                EditBox genBox = mkBox(inputX(), INPUT_W);
+                genBox.setValue(genText);
+                genBox.setResponder(s -> { genText = s; genError = null; });
+                rows.add(genInputRow = row(Component.translatable("e33chat.server.gen"), List.of(genBox), null, "e33chat.server.gen"));
+                Button genOk = Button.builder(Component.translatable("e33chat.server.gen_confirm"),
+                    b -> generateFromMessage()).bounds(btnLeft(), 0, BUTTON_W, 20).build();
+                Button genCancel = Button.builder(Component.translatable("e33chat.server.gen_cancel"),
+                    b -> { genVisible = false; genError = null; rebuild(); }).bounds(btnRight(), 0, BUTTON_W, 20).build();
+                rows.add(row(Component.translatable("e33chat.server.gen"), List.of(genOk, genCancel), null, null));
             }
         } else {
-            rows.add(row(Text.translatable("e33chat.server.actions"), List.of(add), null, "e33chat.server.actions"));
+            rows.add(row(Component.translatable("e33chat.server.actions"), List.of(add), null, "e33chat.server.actions"));
         }
         // 常见格式预设：标题行 + 逐行[模板字符串(标签,按按钮左缘截断)][+正方形按钮右对齐]
         String[] presets = chat ? CHAT_PRESETS : WHISPER_PRESETS;
-        rows.add(titleRow(Text.translatable("e33chat.server.preset_section")));
+        rows.add(titleRow(Component.translatable("e33chat.server.preset_section")));
         for (String p : presets) {
-            ButtonWidget pb = ButtonWidget.builder(Text.literal("+"),
+            Button pb = Button.builder(Component.literal("+"),
                 b -> { if (!list.contains(p)) { list.add(p); rebuild(); } })
-                .dimensions(inputX() + INPUT_W - 20, 0, 20, 20).build();
-            Text label = Text.literal(truncate(p, inputX() - optLabelX() - 8));
+                .bounds(inputX() + INPUT_W - 20, 0, 20, 20).build();
+            Component label = Component.literal(truncate(p, inputX() - optLabelX() - 8));
             rows.add(new Row(label, List.of(reg(pb)), null, ROW_H, null, false));
         }
         // 预览：输入即出结果，结果渲染在行内下半部
-        TextFieldWidget preview = mkBox(inputX(), INPUT_W);
-        preview.setChangedListener(s -> {
+        EditBox preview = mkBox(inputX(), INPUT_W);
+        preview.setResponder(s -> {
             if (chat) previewChatResult = runPreview(s, chatV, false);
             else previewWhisperResult = runPreview(s, whisperV, true);
         });
         if (pendingPreviewText != null) {
-            preview.setText(pendingPreviewText);
+            preview.setValue(pendingPreviewText);
             pendingPreviewText = null;
         }
-        rows.add(row(Text.translatable("e33chat.server.preview"), List.of(preview),
+        rows.add(row(Component.translatable("e33chat.server.preview"), List.of(preview),
             chat ? previewChatResult : previewWhisperResult, "e33chat.server.preview"));
     }
 
     // 教程：分节速查。每节 = 标题行 + 段落行（像素换行）+ 间距；原理节放最后（进阶）
     private void buildTutorialRows() {
         for (String key : List.of("quick", "concept", "fields", "faq", "why")) {
-            rows.add(titleRow(Text.translatable("e33chat.tutorial." + key + ".title")));
-            for (String para : Text.translatable("e33chat.tutorial." + key).getString().split("\n")) {
+            rows.add(titleRow(Component.translatable("e33chat.tutorial." + key + ".title")));
+            for (String para : Component.translatable("e33chat.tutorial." + key).getString().split("\n")) {
                 if (para.isBlank()) {
-                    rows.add(textRow(Text.literal(""), 6));
+                    rows.add(textRow(Component.literal(""), 6));
                     continue;
                 }
                 for (String line : wrapText(para)) {
-                    rows.add(textRow(Text.literal(line), 14));
+                    rows.add(textRow(Component.literal(line), 14));
                 }
             }
-            rows.add(textRow(Text.literal(""), 10));
+            rows.add(textRow(Component.literal(""), 10));
         }
     }
 
@@ -295,7 +297,7 @@ public class ServerConfigScreen extends Screen {
             char ch = raw.charAt(i);
             if (ch == ' ') lastSpace = cur.length();
             cur.append(ch);
-            if (textRenderer.getWidth(cur.toString()) > maxW) {
+            if (font.width(cur.toString()) > maxW) {
                 int cut = lastSpace > 0 ? lastSpace : cur.length() - 1;
                 if (cut <= 0) cut = cur.length() - 1;
                 String line = cur.substring(0, cut).trim();
@@ -313,8 +315,8 @@ public class ServerConfigScreen extends Screen {
 
     // 按像素宽度截断标签文本，超宽加省略号
     private String truncate(String s, int maxWidth) {
-        if (textRenderer.getWidth(s) <= maxWidth) return s;
-        String cut = textRenderer.trimToWidth(s, maxWidth - 6);
+        if (font.width(s) <= maxWidth) return s;
+        String cut = font.plainSubstrByWidth(s, maxWidth - 6);
         return cut + "…";
     }
 
@@ -322,8 +324,8 @@ public class ServerConfigScreen extends Screen {
         String inferred = TemplateMatcher.inferFromMessage(genText, knownNames()).orElse(null);
         if (inferred == null) {
             // 复制功能只复制纯正文（不含玩家名），先提示要贴含名字的完整行
-            genError = Text.translatable("e33chat.server.gen_failed").getString()
-                + "  " + Text.translatable("e33chat.server.gen_howto").getString();
+            genError = Component.translatable("e33chat.server.gen_failed").getString()
+                + "  " + Component.translatable("e33chat.server.gen_howto").getString();
             return;
         }
         chatV.add(inferred);
@@ -337,9 +339,9 @@ public class ServerConfigScreen extends Screen {
 
     private List<String> knownNames() {
         LinkedHashSet<String> names = new LinkedHashSet<>();
-        var player = MinecraftClient.getInstance().player;
-        if (player != null && player.networkHandler != null) {
-            for (var info : player.networkHandler.getPlayerList()) {
+        var player = Minecraft.getInstance().player;
+        if (player != null && player.connection != null) {
+            for (var info : player.connection.getOnlinePlayers()) {
                 names.add(info.getProfile().name());
             }
         }
@@ -356,25 +358,25 @@ public class ServerConfigScreen extends Screen {
         }
         var m = TemplateMatcher.match(text, whisper ? List.of() : tpls, whisper ? tpls : List.of(),
             ChatMessageStore::isKnownPlayerName);
-        if (m.isEmpty()) return Text.translatable("e33chat.server.preview_miss").getString();
+        if (m.isEmpty()) return Component.translatable("e33chat.server.preview_miss").getString();
         var t = m.orElseThrow();
         String name = whisper && t.sender() != null ? t.sender() : t.displayName();
-        return Text.translatable("e33chat.server.preview_hit", name, t.content()).getString();
+        return Component.translatable("e33chat.server.preview_hit", name, t.content()).getString();
     }
 
-    private ButtonWidget mkToggle(java.util.function.BooleanSupplier current,
+    private Button mkToggle(java.util.function.BooleanSupplier current,
                                   java.util.function.Consumer<Boolean> apply) {
-        return ButtonWidget.builder(current.getAsBoolean() ? ScreenTexts.ON : ScreenTexts.OFF,
+        return Button.builder(current.getAsBoolean() ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
             b -> {
                 boolean nv = !current.getAsBoolean();
                 apply.accept(nv);
-                b.setMessage(nv ? ScreenTexts.ON : ScreenTexts.OFF);
-            }).dimensions(btnRight(), 0, BUTTON_W, 20).build();
+                b.setMessage(nv ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF);
+            }).bounds(btnRight(), 0, BUTTON_W, 20).build();
     }
 
     // 创建输入框（统一 maxLength 200）
-    private TextFieldWidget mkBox(int x, int w) {
-        TextFieldWidget box = new TextFieldWidget(textRenderer, x, 0, w, 20, Text.literal(""));
+    private EditBox mkBox(int x, int w) {
+        EditBox box = new EditBox(font, x, 0, w, 20, Component.literal(""));
         box.setMaxLength(200);
         return box;
     }
@@ -403,26 +405,26 @@ public class ServerConfigScreen extends Screen {
         for (int i = 0; i < templates.size(); i++) {
             TemplateMatcher.CompileResult result = TemplateMatcher.compile(templates.get(i));
             if (result.template() == null) {
-                return Text.translatable("e33chat.server.invalid",
-                    Text.translatable("e33chat.server." + kind), i + 1, result.error()).getString();
+                return Component.translatable("e33chat.server.invalid",
+                    Component.translatable("e33chat.server." + kind), i + 1, result.error()).getString();
             }
         }
         return null;
     }
 
     private void doClose() {
-        if (client != null) client.setScreen(lastScreen);
+        if (minecraft != null) minecraft.gui.setScreen(lastScreen);
     }
 
     @Override
-    public void close() {
+    public void onClose() {
         if (changed()) {
-            client.setScreen(new ConfirmScreen(confirmed -> {
+            minecraft.gui.setScreen(new ConfirmScreen(confirmed -> {
                 if (confirmed) doClose();
-                else client.setScreen(this);
+                else minecraft.gui.setScreen(this);
             },
-                Text.translatable("e33chat.config.discard.title"),
-                Text.translatable("e33chat.config.discard.message", changeCount())));
+                Component.translatable("e33chat.config.discard.title"),
+                Component.translatable("e33chat.config.discard.message", changeCount())));
         } else {
             doClose();
         }
@@ -443,15 +445,15 @@ public class ServerConfigScreen extends Screen {
     @Override
     protected void init() {
         buildRows();
-        rightPane.setOffset(MathHelper.clamp(rightPane.offset(), 0, calcMaxScroll()));
-        treePane.setOffset(MathHelper.clamp(treePane.offset(), 0, calcTreeMaxScroll()));
+        rightPane.setOffset(Mth.clamp(rightPane.offset(), 0, calcMaxScroll()));
+        treePane.setOffset(Mth.clamp(treePane.offset(), 0, calcTreeMaxScroll()));
 
-        doneBtn = addDrawableChild(ButtonWidget.builder(ScreenTexts.DONE, b -> doClose())
-            .dimensions(width / 2 - 100, height - 32, 200, 20).build());
-        exitBtn = addDrawableChild(ButtonWidget.builder(Text.translatable("e33chat.config.exit"), b -> doClose())
-            .dimensions(width / 2 - 104, height - 32, 100, 20).build());
-        saveBtn = addDrawableChild(ButtonWidget.builder(Text.translatable("e33chat.server.save"), b -> save())
-            .dimensions(width / 2 + 4, height - 32, 100, 20).build());
+        doneBtn = addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, b -> doClose())
+            .bounds(width / 2 - 100, height - 32, 200, 20).build());
+        exitBtn = addRenderableWidget(Button.builder(Component.translatable("e33chat.config.exit"), b -> doClose())
+            .bounds(width / 2 - 104, height - 32, 100, 20).build());
+        saveBtn = addRenderableWidget(Button.builder(Component.translatable("e33chat.server.save"), b -> save())
+            .bounds(width / 2 + 4, height - 32, 100, 20).build());
 
         relayoutWidgets();
     }
@@ -459,7 +461,7 @@ public class ServerConfigScreen extends Screen {
     private void rebuild() {
         rightPane.setOffset(0);
         setFocused(null);
-        clearChildren();
+        clearWidgets();
         boxErrors.clear();
         init();
     }
@@ -474,8 +476,8 @@ public class ServerConfigScreen extends Screen {
     private void relayoutWidgets() {
         int y = viewTop() - rightPane.offset();
         for (Row row : rows) {
-            for (Element w : row.widgets()) {
-                if (w instanceof net.minecraft.client.gui.widget.ClickableWidget cw) {
+            for (GuiEventListener w : row.widgets()) {
+                if (w instanceof net.minecraft.client.gui.components.AbstractWidget cw) {
                     cw.setY(y);
                     cw.visible = y >= viewTop() && y + row.height() <= viewBottom();
                 }
@@ -518,7 +520,7 @@ public class ServerConfigScreen extends Screen {
         relayoutWidgets();
     }
 
-    private void drawBar(DrawContext g, int trackX, int top, int bot,
+    private void drawBar(UiCanvas g, int trackX, int top, int bot,
                          int totalH, int offset, int maxScroll,
                          double mx, double my, boolean dragging) {
         if (maxScroll <= 0) return;
@@ -535,7 +537,7 @@ public class ServerConfigScreen extends Screen {
             trackX, ty, SCROLLBAR_W, th, base / 255f);
     }
 
-    private void drawTriangle(DrawContext g, int x, int y, boolean down, int color) {
+    private void drawTriangle(UiCanvas g, int x, int y, boolean down, int color) {
         if (down) {
             g.fill(x, y, x + 5, y + 1, color);
             g.fill(x + 1, y + 1, x + 4, y + 2, color);
@@ -552,10 +554,12 @@ public class ServerConfigScreen extends Screen {
     // ===== 交互 =====
 
     @Override
-    public boolean mouseClicked(Click click, boolean doubleClick) {
+    public boolean mouseClicked(MouseButtonEvent click, boolean doubleClick) {
         double mouseX = click.x();
         double mouseY = click.y();
-        int button = click.button();
+        // 26.3 键号是 SDL 编号（1=左/2=中/3=右），本类命中判定按旧编号（0=左/1=右）书写。
+        // click 本体仍按原样传给 super（原版控件要的是 1=左）。
+        int button = MouseButtons.legacy(click.button());
         int rMax = calcMaxScroll();
         if (rMax > 0 && mouseX >= rTrackX() && mouseX < rTrackX() + SCROLLBAR_W
                 && mouseY >= viewTop() && mouseY < viewBottom()) {
@@ -602,7 +606,7 @@ public class ServerConfigScreen extends Screen {
     }
 
     @Override
-    public boolean mouseDragged(Click click, double deltaX, double deltaY) {
+    public boolean mouseDragged(MouseButtonEvent click, double deltaX, double deltaY) {
         double mouseY = click.y();
         if (rightPane.dragging()) {
             rightPane.dragTo((int) mouseY, rTrackH(), rTotalH(), calcMaxScroll(), 80);
@@ -616,7 +620,7 @@ public class ServerConfigScreen extends Screen {
     }
 
     @Override
-    public boolean mouseReleased(Click click) {
+    public boolean mouseReleased(MouseButtonEvent click) {
         rightPane.dragEnd();
         treePane.dragEnd();
         return super.mouseReleased(click);
@@ -625,11 +629,12 @@ public class ServerConfigScreen extends Screen {
     // ===== 渲染 =====
 
     @Override
-    public void render(DrawContext g, int mouseX, int mouseY, float partialTick) {
-        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.CONFIG_BG, Appearance.resolvedTheme()),
+    public void extractRenderState(GuiGraphicsExtractor raw, int mouseX, int mouseY, float partialTick) {
+        UiCanvas g = UiCanvas.of(raw);
+        g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.CONFIG_BG, Appearance.resolvedTheme()),
             0, 0, 0f, 0f, width, height, 16, 16, 16, 16);
         tickAnims();
-        g.drawText(textRenderer, title, width / 2 - textRenderer.getWidth(title) / 2, 14, c().configTitle(), false);
+        g.drawText(font, title, width / 2 - font.width(title) / 2, 14, c().configTitle(), false);
 
         String tooltipKey = null;
 
@@ -640,11 +645,11 @@ public class ServerConfigScreen extends Screen {
             boolean sel = i == selectedCat;
             boolean hover = mouseX >= CAT_X && mouseX <= CAT_X + CAT_W && mouseY >= ly && mouseY < ly + CAT_ROW_H;
             if (sel || hover)
-                g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.HOVER_BG, Appearance.resolvedTheme()),
+                g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.HOVER_BG, Appearance.resolvedTheme()),
                     CAT_X, ly, 0f, 0f, CAT_W, CAT_ROW_H, 16, 16, 16, 16);
             if (sel)
                 g.fill(CAT_X, ly, CAT_X + 2, ly + CAT_ROW_H, c().configTitle());
-            g.drawText(textRenderer, Text.translatable(CAT_KEYS[i]), CAT_X + 18, ly + (CAT_ROW_H - 8) / 2,
+            g.drawText(font, Component.translatable(CAT_KEYS[i]), CAT_X + 18, ly + (CAT_ROW_H - 8) / 2,
                 sel ? c().configTitle() : c().configLabel(), false);
             ly += CAT_ROW_H;
         }
@@ -653,7 +658,7 @@ public class ServerConfigScreen extends Screen {
             mouseX, mouseY, treePane.dragging());
 
         // 分类与选项区分隔线
-        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.DIVIDER, Appearance.resolvedTheme()),
+        g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.DIVIDER, Appearance.resolvedTheme()),
             dividerX(), START_Y - 6, 0f, 0f, 1, viewBottom() - (START_Y - 6), 16, 16, 16, 16);
 
         // 右区选项行，硬裁剪到视口；普通行 label 垂直居中对齐按钮（y+6），教程小行顶部对齐（y+2）
@@ -662,38 +667,38 @@ public class ServerConfigScreen extends Screen {
         for (Row row : rows) {
             if (row.title()) {
                 // 分区标题：灰字左对齐 + 字右侧延伸一条细分隔线（同客户端配置界面）
-                Text label = row.label();
-                g.drawText(textRenderer, label, optLabelX(), y + 11, c().configLabel(), false);
-                int lineX = optLabelX() + textRenderer.getWidth(label) + 8;
+                Component label = row.label();
+                g.drawText(font, label, optLabelX(), y + 11, c().configLabel(), false);
+                int lineX = optLabelX() + font.width(label) + 8;
                 int lineEnd = optLabelX() + optAreaW() + 4;
                 if (lineX < lineEnd)
-                    g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.DIVIDER, Appearance.resolvedTheme()),
+                    g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, UiTextureManager.rl(UiElement.DIVIDER, Appearance.resolvedTheme()),
                         lineX, y + 15, 0f, 0f, lineEnd - lineX, 1, 16, 16, 16, 16);
                 y += row.height();
                 continue;
             }
             if (!row.label().getString().isEmpty()) {
                 int labelY = row.height() == ROW_H ? y + 6 : y + 2;
-                g.drawText(textRenderer, row.label(), optLabelX(), labelY, c().configLabel(), false);
+                g.drawText(font, row.label(), optLabelX(), labelY, c().configLabel(), false);
                 if (row.tooltipKey() != null && y >= viewTop() && y + 20 <= viewBottom()
                     && mouseX >= optLabelX() - 4 && mouseX <= inputX() - 10 && mouseY >= y && mouseY <= y + 20)
                     tooltipKey = row.tooltipKey();
             }
             if (row.extraText() != null && !row.extraText().isEmpty()) {
-                g.drawText(textRenderer, Text.literal(truncate(row.extraText(), rightAreaW())),
+                g.drawText(font, Component.literal(truncate(row.extraText(), rightAreaW())),
                     optLabelX(), y + 21, c().textSecondary(), false);
             }
             // 实时校验错误：行内控件下方红字（模板行），像素截断防溢出
-            for (Element w : row.widgets()) {
-                if (w instanceof TextFieldWidget eb && boxErrors.containsKey(eb)) {
-                    g.drawText(textRenderer, Text.literal(truncate(boxErrors.get(eb), rightAreaW())),
+            for (GuiEventListener w : row.widgets()) {
+                if (w instanceof EditBox eb && boxErrors.containsKey(eb)) {
+                    g.drawText(font, Component.literal(truncate(boxErrors.get(eb), rightAreaW())),
                         optLabelX(), y + 22, 0xFFFF4444, false);
                     break;
                 }
             }
             // 生成失败提示：对齐在生成输入框所在行下方（与模板警告同风格），像素截断
             if (genError != null && row == genInputRow) {
-                g.drawText(textRenderer, Text.literal(truncate(genError, rightAreaW())),
+                g.drawText(font, Component.literal(truncate(genError, rightAreaW())),
                     optLabelX(), y + 22, 0xFFFF4444, false);
             }
             y += row.height();
@@ -707,27 +712,27 @@ public class ServerConfigScreen extends Screen {
         exitBtn.visible = changed > 0;
         saveBtn.visible = changed > 0;
 
-        super.render(g, mouseX, mouseY, partialTick);
+        super.extractRenderState(raw, mouseX, mouseY, partialTick);
 
         if (changed > 0)
-            g.drawText(textRenderer, Text.translatable("e33chat.config.changed", changed),
+            g.drawText(font, Component.translatable("e33chat.config.changed", changed),
                 width / 2 + 112, height - 26, c().configLabel(), false);
 
         if (error != null) {
             // 保存校验失败：底部固定红字（模板行/生成行的实时错误已在行下方各自显示），像素截断
-            g.drawText(textRenderer, Text.literal(truncate(error, rightAreaW())),
+            g.drawText(font, Component.literal(truncate(error, rightAreaW())),
                 optLabelX(), viewBottom() - 12, 0xFFFF4444, false);
         }
 
         if (tooltipKey != null)
-            g.drawTooltip(textRenderer, Text.translatable(tooltipKey + ".desc"), mouseX, mouseY);
+            g.drawTooltip(font, Component.translatable(tooltipKey + ".desc"), mouseX, mouseY);
     }
 
     @Override
-    public void renderBackground(DrawContext g, int mouseX, int mouseY, float partialTick) {
+    public void extractBackground(GuiGraphicsExtractor raw, int mouseX, int mouseY, float partialTick) {
         // no-op：背景已在 render() 开头画一次（同客户端）
     }
 
     @Override
-    public boolean shouldPause() { return true; }
+    public boolean isPauseScreen() { return true; }
 }

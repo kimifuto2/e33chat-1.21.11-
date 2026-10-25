@@ -24,10 +24,10 @@ import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.command.ServerCommandSource;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.network.chat.Component;
+import net.minecraft.ChatFormatting;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -71,7 +71,7 @@ public class ChatBubbleMod implements ModInitializer {
                 s = mediaStore;
                 if (s == null) {
                     s = new com.niuqu.chatbubble.server.DiskMediaStore(
-                        server.getSavePath(net.minecraft.util.WorldSavePath.ROOT)
+                        server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT)
                             .resolve("serverconfig").resolve("e33chat-media"));
                     mediaStore = s;
                 }
@@ -100,12 +100,12 @@ public class ChatBubbleMod implements ModInitializer {
      * <p>顺手清掉过期的条目：离线服的聊天事件不触发，{@code takeQuote()} 永远没机会消费，
      * 不清就会随在线过的玩家数一直涨。
      */
-    private static void rememberPendingQuote(ServerPlayerEntity player, String messageHash,
+    private static void rememberPendingQuote(ServerPlayer player, String messageHash,
                                               String quotedHash, String quotedSender,
                                               String quotedContent) {
         long now = System.currentTimeMillis();
         pendingQuotes.entrySet().removeIf(e -> now - e.getValue().time() > QUOTE_TTL_MS);
-        pendingQuotes.put(player.getUuid(),
+        pendingQuotes.put(player.getUUID(),
             new QuotePending(quotedSender, quotedContent, messageHash, quotedHash, now));
     }
 
@@ -117,7 +117,7 @@ public class ChatBubbleMod implements ModInitializer {
      *                    保证同一 {@code msgHash} 只广播一次；false = 纯 @ 提到广播，不占
      *                    去重标记（否则会把随后到达的 quote_sync 误判成重复而丢掉引用块）。
      */
-    private static void broadcastChatMeta(MinecraftServer server, ServerPlayerEntity sender,
+    private static void broadcastChatMeta(MinecraftServer server, ServerPlayer sender,
                                           String messageHash, String quotedHash,
                                           String quotedSender, String quotedContent,
                                           List<String> mentions, String source,
@@ -129,7 +129,7 @@ public class ChatBubbleMod implements ModInitializer {
         String from = sender.getName().getString();
 
         if (dedupeQuote) {
-            String key = sender.getUuid() + "|" + msgHash;
+            String key = sender.getUUID() + "|" + msgHash;
             long now = System.currentTimeMillis();
             broadcastQuotes.entrySet().removeIf(e -> now - e.getValue() > QUOTE_TTL_MS);
             Long prev = broadcastQuotes.put(key, now);
@@ -140,10 +140,10 @@ public class ChatBubbleMod implements ModInitializer {
             }
         }
 
-        ChatMetaPayload meta = new ChatMetaPayload(sender.getUuid(), from, msgHash, qSender, qContent,
+        ChatMetaPayload meta = new ChatMetaPayload(sender.getUUID(), from, msgHash, qSender, qContent,
             mentions == null ? Collections.<String>emptyList() : mentions, qHash);
-        var recipients = server.getPlayerManager().getPlayerList();
-        for (ServerPlayerEntity p : recipients) ServerPlayNetworking.send(p, meta);
+        var recipients = server.getPlayerList().getPlayers();
+        for (ServerPlayer p : recipients) ServerPlayNetworking.send(p, meta);
         srvLog("chat_meta broadcast | from=" + from + " | msgHash=" + preview(msgHash)
             + " | quotedHash=" + preview(qHash)
             + " | quoteSender=" + preview(qSender) + " | quote=" + preview(qContent)
@@ -193,21 +193,21 @@ public class ChatBubbleMod implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        PayloadTypeRegistry.playC2S().register(QuoteSyncPayload.ID, QuoteSyncPayload.CODEC);
-        PayloadTypeRegistry.playS2C().register(ChatMetaPayload.ID, ChatMetaPayload.CODEC);
-        PayloadTypeRegistry.playS2C().register(HistoryPayload.ID, HistoryPayload.CODEC);
-        PayloadTypeRegistry.playS2C().register(ConfigSyncPayload.ID, ConfigSyncPayload.CODEC);
-        PayloadTypeRegistry.playS2C().register(ConfigSyncV2Payload.ID, ConfigSyncV2Payload.CODEC);
-        PayloadTypeRegistry.playS2C().register(ServerConfigScreenPayload.ID, ServerConfigScreenPayload.CODEC);
-        PayloadTypeRegistry.playC2S().register(ServerConfigSavePayload.ID, ServerConfigSavePayload.CODEC);
-        PayloadTypeRegistry.playC2S().register(MediaUploadPayload.ID, MediaUploadPayload.CODEC);
-        PayloadTypeRegistry.playC2S().register(MediaRequestPayload.ID, MediaRequestPayload.CODEC);
-        PayloadTypeRegistry.playS2C().register(MediaUploadAckPayload.ID, MediaUploadAckPayload.CODEC);
-        PayloadTypeRegistry.playS2C().register(MediaResponsePayload.ID, MediaResponsePayload.CODEC);
-        PayloadTypeRegistry.playS2C().register(MediaCapPayload.ID, MediaCapPayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(QuoteSyncPayload.ID, QuoteSyncPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(ChatMetaPayload.ID, ChatMetaPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(HistoryPayload.ID, HistoryPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(ConfigSyncPayload.ID, ConfigSyncPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(ConfigSyncV2Payload.ID, ConfigSyncV2Payload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(ServerConfigScreenPayload.ID, ServerConfigScreenPayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(ServerConfigSavePayload.ID, ServerConfigSavePayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(MediaUploadPayload.ID, MediaUploadPayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(MediaRequestPayload.ID, MediaRequestPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(MediaUploadAckPayload.ID, MediaUploadAckPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(MediaResponsePayload.ID, MediaResponsePayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(MediaCapPayload.ID, MediaCapPayload.CODEC);
 
         ServerPlayNetworking.registerGlobalReceiver(MediaUploadPayload.ID, (payload, context) -> {
-            ServerPlayerEntity player = context.player();
+            ServerPlayer player = context.player();
             context.server().execute(() -> com.niuqu.chatbubble.server.MediaService.handleUpload(
                 player, mediaStore(context.server()), mediaEnabled, mediaAutoClean,
                 payload.uploadId(), payload.index(), payload.totalChunks(),
@@ -215,7 +215,7 @@ public class ChatBubbleMod implements ModInitializer {
         });
 
         ServerPlayNetworking.registerGlobalReceiver(MediaRequestPayload.ID, (payload, context) -> {
-            ServerPlayerEntity player = context.player();
+            ServerPlayer player = context.player();
             context.server().execute(() -> com.niuqu.chatbubble.server.MediaService.handleRequest(
                 player, mediaStore(context.server()), payload.mediaId()));
         });
@@ -224,7 +224,7 @@ public class ChatBubbleMod implements ModInitializer {
             // 必须**就地**处理，不能再套一层 context.server().execute()：
             // Fabric 保证 payload receiver 已经在服务端线程跑（ServerPlayNetworking.PlayPayloadHandler
             // 的约定 + AbstractChanneledNetworkAddon 自己会 schedule 到主线程），多一跳只会推迟广播。
-            ServerPlayerEntity player = context.player();
+            ServerPlayer player = context.player();
             // 归一化：messageHash 的契约是「本次消息明文的十进制 hashCode」，旧客户端（≤2.4.2）
             // 曾直接发明文 —— 归一化后客户端才 match 得上自己的聊天回显。
             String messageHash = normalizeMessageHash(payload.messageHash());
@@ -256,16 +256,16 @@ public class ChatBubbleMod implements ModInitializer {
 
         // Server-config GUI save: validate, persist to JSON, rebroadcast
         ServerPlayNetworking.registerGlobalReceiver(ServerConfigSavePayload.ID, (payload, context) -> {
-            ServerPlayerEntity player = context.player();
+            ServerPlayer player = context.player();
             context.server().execute(() -> {
-                if (!player.getPermissions().hasPermission(new net.minecraft.command.permission.Permission.Level(
-                        net.minecraft.command.permission.PermissionLevel.GAMEMASTERS))) {
-                    player.sendMessage(Text.translatable("e33chat.server.op_required")
-                        .formatted(Formatting.RED), false);
+                if (!player.permissions().hasPermission(
+                        net.minecraft.server.permissions.Permissions.COMMANDS_GAMEMASTER)) {
+                    player.sendSystemMessage(Component.translatable("e33chat.server.op_required")
+                        .withStyle(ChatFormatting.RED));
                     return;
                 }
                 ServerConfigSavePayload.handleServer(payload, player, cfg -> {
-                    var path = context.server().getSavePath(net.minecraft.util.WorldSavePath.ROOT)
+                    var path = context.server().getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT)
                         .resolve("serverconfig").resolve("e33chat-server.json");
                     ServerConfigManager.save(path, cfg);
                     loadConfig(cfg);
@@ -275,12 +275,12 @@ public class ChatBubbleMod implements ModInitializer {
         });
 
         ServerMessageEvents.CHAT_MESSAGE.register((message, sender, params) -> {
-            String rawText = message.getContent().getString();
-            int playerCount = sender.getEntityWorld().getServer() != null
-                ? sender.getEntityWorld().getServer().getPlayerManager().getPlayerList().size() : 1;
+            String rawText = message.decoratedContent().getString();
+            int playerCount = sender.level().getServer() != null
+                ? sender.level().getServer().getPlayerList().getPlayers().size() : 1;
             List<String> mentions = extractMentions(rawText, playerCount);
 
-            QuotePending quote = takeQuote(sender.getUuid());
+            QuotePending quote = takeQuote(sender.getUUID());
             String messageHash = quote != null
                 ? normalizeMessageHash(quote.messageHash())
                 : String.valueOf(rawText.hashCode());
@@ -290,7 +290,7 @@ public class ChatBubbleMod implements ModInitializer {
             String quotedHash = quote != null ? quote.quotedHash() : "";
 
             if (quote != null || !mentions.isEmpty()) {
-                var metaServer = sender.getEntityWorld().getServer();
+                var metaServer = sender.level().getServer();
                 if (metaServer != null) {
                     if (quote != null) {
                         // 兼容兜底路径：与 quote_sync 的即时广播共用去重集合 —— quote_sync
@@ -314,7 +314,7 @@ public class ChatBubbleMod implements ModInitializer {
             }
 
             addToHistory(new HistoryPayload.HistoryEntry(
-                sender.getUuid(), sender.getName().getString(), rawText,
+                sender.getUUID(), sender.getName().getString(), rawText,
                 System.currentTimeMillis(), false,
                 quote != null ? quote.quotedContent() : null,
                 quote != null ? quote.quotedSenderName() : null));
@@ -325,7 +325,7 @@ public class ChatBubbleMod implements ModInitializer {
             // NeoForge's per-world ModConfig.Type.SERVER convention)
             if (!configLoaded) {
                 configLoaded = true;
-                var configPath = server.getSavePath(net.minecraft.util.WorldSavePath.ROOT)
+                var configPath = server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT)
                     .resolve("serverconfig").resolve("e33chat-server.json");
                 ServerConfig config = ServerConfigManager.load(configPath);
                 loadConfig(config);
@@ -364,16 +364,16 @@ public class ChatBubbleMod implements ModInitializer {
     // /msg /tell /w /whisper carry a quote the client synced (QuoteSyncPayload); consume it
     // here and broadcast the quote meta, because vanilla private messages never hit
     // ServerMessageEvents.CHAT_MESSAGE
-    public static void consumePrivateMessageQuote(ParseResults<ServerCommandSource> parseResults, String command) {
+    public static void consumePrivateMessageQuote(ParseResults<CommandSourceStack> parseResults, String command) {
         String[] parts = command.split(" ");
         if (parts.length < 3) return;
         String label = parts[0];
         if (label.startsWith("/")) label = label.substring(1);
         if (!label.equals("msg") && !label.equals("tell") && !label.equals("w") && !label.equals("whisper")) return;
-        ServerCommandSource source = parseResults.getContext().getSource();
-        ServerPlayerEntity sender = source.getPlayer();
+        CommandSourceStack source = parseResults.getContext().getSource();
+        ServerPlayer sender = source.getPlayer();
         if (sender == null) return;
-        QuotePending quote = takeQuote(sender.getUuid());
+        QuotePending quote = takeQuote(sender.getUUID());
         if (quote == null) return;
         String messageHash = normalizeMessageHash(quote.messageHash());
         // 同一入口：私聊的 /msg 若它的 quote_sync 已经先广播过（客户端发命令前就发 quote_sync），
@@ -394,14 +394,14 @@ public class ChatBubbleMod implements ModInitializer {
     }
 
     public static void broadcastServerConfig(net.minecraft.server.MinecraftServer server) {
-        for (ServerPlayerEntity p : server.getPlayerManager().getPlayerList()) {
+        for (ServerPlayer p : server.getPlayerList().getPlayers()) {
             sendServerConfigTripleTo(p);
         }
     }
 
     // 三 payload 组合（use_tpa + templates + media cap）：JOIN 与 broadcast 共用。
     // media 是独立能力 type——旧客户端安全丢未知 payload，mediaEnabled 不会在混版本时 desync。
-    private static void sendServerConfigTripleTo(ServerPlayerEntity player) {
+    private static void sendServerConfigTripleTo(ServerPlayer player) {
         ServerPlayNetworking.send(player,
             new ConfigSyncPayload(useTpa));
         ServerPlayNetworking.send(player, buildConfigV2());

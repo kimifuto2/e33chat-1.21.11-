@@ -3,7 +3,7 @@ package com.niuqu.chatbubble.channeldiet;
 import net.fabricmc.loader.api.FabricLoader;
 import net.fabricmc.loader.api.ModContainer;
 import net.fabricmc.loader.api.metadata.ModMetadata;
-import net.minecraft.text.Text;
+import net.minecraft.network.chat.Component;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -48,7 +48,7 @@ public final class ChannelDietNames {
     /** 命名空间的显示名（永不返回 null / 空串）。 */
     public static String display(String namespace) {
         if (namespace == null || namespace.isEmpty()) {
-            return Text.translatable("e33chat.channeldiet.mod.unknown").getString();
+            return Component.translatable("e33chat.channeldiet.mod.unknown").getString();
         }
         String ns = namespace.toLowerCase(Locale.ROOT);
         String hit = CACHE.get(ns);
@@ -72,9 +72,9 @@ public final class ChannelDietNames {
 
     private static String resolve(String ns) {
         switch (ns) {
-            case "minecraft": return Text.translatable("e33chat.channeldiet.mod.minecraft").getString();
-            case "fabric": return Text.translatable("e33chat.channeldiet.mod.fabric").getString();
-            case "c": return Text.translatable("e33chat.channeldiet.mod.c").getString();
+            case "minecraft": return Component.translatable("e33chat.channeldiet.mod.minecraft").getString();
+            case "fabric": return Component.translatable("e33chat.channeldiet.mod.fabric").getString();
+            case "c": return Component.translatable("e33chat.channeldiet.mod.c").getString();
             default: break;
         }
         ModContainer mod = findMod(ns);

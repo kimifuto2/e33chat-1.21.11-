@@ -3,10 +3,11 @@ import com.niuqu.chatbubble.texture.UiTextureManager;
 import com.niuqu.chatbubble.texture.ColoredTextureRenderer;
 import com.niuqu.chatbubble.render.ChatBubbleTheme;
 
-import net.minecraft.client.font.TextRenderer;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.widget.TextFieldWidget;
-import net.minecraft.text.Text;
+import net.minecraft.client.gui.Font;
+import com.niuqu.chatbubble.render.UiCanvas;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.network.chat.Component;
 
 import java.util.List;
 import com.niuqu.chatbubble.texture.UiElement;
@@ -22,9 +23,9 @@ public class ChatSearchPanel {
     // 弹层 x 夹在聊天面板内且不超屏幕左右（与表情面板同一模式）——6x 时
     // panelW 收缩到 ~166 < 180，固定居中会溢出屏幕左边
     static int clampX(int px, int pw, int panelX, int panelW) {
-        int screenW = net.minecraft.client.MinecraftClient.getInstance().getWindow().getScaledWidth();
+        int screenW = net.minecraft.client.Minecraft.getInstance().getWindow().getGuiScaledWidth();
         int max = Math.min(panelX + panelW - pw - 2, screenW - pw - 2);
-        return net.minecraft.util.math.MathHelper.clamp(px, Math.min(panelX + 2, max), max);
+        return net.minecraft.util.Mth.clamp(px, Math.min(panelX + 2, max), max);
     }
 
     // 宽度也随聊天面板收缩（仅 clamp 不收缩时，180 > 166 依然左溢出 16px）
@@ -32,10 +33,10 @@ public class ChatSearchPanel {
         return Math.max(100, Math.min(PANEL_W, panelWidth - 4));
     }
 
-    public void render(DrawContext g, int mouseX, int mouseY,
-            TextRenderer font, ChatBubbleTheme.Colors c,
+    public void render(UiCanvas g, int mouseX, int mouseY,
+            Font font, ChatBubbleTheme.Colors c,
             int panelX, int panelW, int barTop,
-            TextFieldWidget searchInput,
+            EditBox searchInput,
             List<Integer> searchMatches, int searchMatchIdx, float alpha) {
         if (!visible) return;
         int a255 = (int) (255 * alpha);
@@ -53,12 +54,12 @@ public class ChatSearchPanel {
 
         String counter = "";
         int counterW = 0;
-        if (!searchInput.getText().isEmpty()) {
+        if (!searchInput.getValue().isEmpty()) {
             if (searchMatches.isEmpty())
-                counter = Text.translatable("e33chat.search.no_match").getString();
+                counter = Component.translatable("e33chat.search.no_match").getString();
             else
                 counter = (searchMatchIdx + 1) + "/" + searchMatches.size();
-            counterW = font.getWidth(counter) + 6;
+            counterW = font.width(counter) + 6;
         }
 
         com.niuqu.chatbubble.render.RoundRectRenderer.fill(g, inputX, inputY, inputX + inputW, inputY + INPUT_H, 5f,
@@ -83,8 +84,8 @@ public class ChatSearchPanel {
         searchInput.setHeight(INPUT_H - 2);
         searchInput.setVisible(true);
 
-        if (searchInput.getText().isEmpty()) {
-            String ph = Text.translatable("e33chat.search.placeholder").getString();
+        if (searchInput.getValue().isEmpty()) {
+            String ph = Component.translatable("e33chat.search.placeholder").getString();
             g.drawText(font, ph, inputX + 2, inputY + 3, com.niuqu.chatbubble.render.ChatBubbleTheme.alphaBlend(c.textMuted(), a255), false);
         }
     }

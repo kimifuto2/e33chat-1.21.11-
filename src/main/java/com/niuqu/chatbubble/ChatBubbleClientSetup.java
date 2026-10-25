@@ -20,17 +20,17 @@ import com.niuqu.chatbubble.network.ServerConfigScreenPayload;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking;
-import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.resource.ResourceManagerHelper;
 import net.fabricmc.fabric.api.resource.SimpleSynchronousResourceReloadListener;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientCommonNetworkHandler;
-import net.minecraft.client.network.ClientConfigurationNetworkHandler;
-import net.minecraft.client.network.ServerInfo;
-import net.minecraft.resource.ResourceManager;
-import net.minecraft.resource.ResourceType;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl;
+import net.minecraft.client.multiplayer.ClientConfigurationPacketListenerImpl;
+import net.minecraft.client.multiplayer.ServerData;
+import net.minecraft.server.packs.resources.ResourceManager;
+import net.minecraft.server.packs.PackType;
+import net.minecraft.resources.Identifier;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -139,12 +139,12 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
      *                {@code ClientPlayNetworkHandler}，null 表示没有连接
      * @return 小写去空白的地址；拿不到（单机/未连接/accessor 未生效）返回 null
      */
-    private static String serverAddressFromHandler(ClientCommonNetworkHandler handler) {
+    private static String serverAddressFromHandler(ClientCommonPacketListenerImpl handler) {
         if (handler == null) return null;
         try {
-            ServerInfo info = ((ClientCommonNetworkHandlerAccessor) handler).e33chat$getServerInfo();
+            ServerData info = ((ClientCommonNetworkHandlerAccessor) handler).e33chat$getServerInfo();
             if (info == null) return null;
-            String a = info.address;
+            String a = info.ip;
             return (a == null || a.isBlank()) ? null : a.trim().toLowerCase(java.util.Locale.ROOT);
         } catch (Throwable t) {
             // 安全默认：取不到就当「未知」，调用方一律按「不注册」处理，绝不放宽成放行
@@ -154,15 +154,15 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
     }
 
     /** 当前连接的目标服务器地址；单机/局域网（集成服务器）返回 null。 */
-    private static String currentServerAddress(MinecraftClient client) {
+    private static String currentServerAddress(Minecraft client) {
         try {
             if (client == null) return null;
             // PLAY 阶段：先读网络处理器上的 serverInfo（与配置阶段同一个字段、同一个值），
             // 这样「JOIN 时记住的地址」和「配置阶段比对的地址」一定是同一个字符串。
-            String fromHandler = serverAddressFromHandler(client.getNetworkHandler());
+            String fromHandler = serverAddressFromHandler(client.getConnection());
             if (fromHandler != null) return fromHandler;
-            if (client.getCurrentServerEntry() == null) return null;
-            String a = client.getCurrentServerEntry().address;
+            if (client.getCurrentServer() == null) return null;
+            String a = client.getCurrentServer().ip;
             return (a == null || a.isBlank()) ? null : a.trim().toLowerCase(java.util.Locale.ROOT);
         } catch (Throwable t) {
             return null;
@@ -176,15 +176,15 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
      * <p>**安全默认**：地址拿不到、或拿到了但既不是本地也不在白名单里 → 什么都不注册。
      * 绝不能因为 {@code addr == null} 就退化成「放行」。
      */
-    private static void decideConfigurationChannels(ClientConfigurationNetworkHandler handler,
-                                                    MinecraftClient client,
+    private static void decideConfigurationChannels(ClientConfigurationPacketListenerImpl handler,
+                                                    Minecraft client,
                                                     String phase) {
         try {
             unregisterCustomChannels("configuration " + phase);
             // 集成服务器（单机 / 自己是局域网主机）：用 client.getServer() 判定（不看地址），
             // 这类目标一定是同一个 JVM 里的服务端，声明通道零风险。注意 START 一定晚于
             // SERVER_STARTING，所以这里必须重新登记（刚被上面的注销清掉了）。
-            boolean integrated = client.getServer() != null;
+            boolean integrated = client.getSingleplayerServer() != null;
             // 远程连接的地址**只能**从配置阶段自己的网络处理器上取：getCurrentServerEntry()
             // 由 player 派生，此刻恒为 null（这正是白名单长期失效的根因）。
             String addr = serverAddressFromHandler(handler);
@@ -270,9 +270,9 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
     }
 
     private static Path e33ServersPath() {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null || mc.runDirectory == null) return null;
-        return mc.runDirectory.toPath().resolve("config/e33chat").resolve(E33_SERVERS_FILE);
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.gameDirectory == null) return null;
+        return mc.gameDirectory.toPath().resolve("config/e33chat").resolve(E33_SERVERS_FILE);
     }
 
     /** 已记住的服务器列表（自动维护）。 */
@@ -327,9 +327,9 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
     /** config/e33chat/<name> 是否存在（诊断/兼容开关，见 {@link #registerCustomChannels()}）。 */
     private static boolean flagFileExists(String name) {
         try {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc == null || mc.runDirectory == null) return false;
-            return Files.exists(mc.runDirectory.toPath().resolve("config/e33chat").resolve(name));
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null || mc.gameDirectory == null) return false;
+            return Files.exists(mc.gameDirectory.toPath().resolve("config/e33chat").resolve(name));
         } catch (Throwable t) {
             return false;
         }
@@ -405,8 +405,8 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
             });
             // Server-config GUI: opened on the client only (server never loads the Screen)
             ClientPlayNetworking.registerGlobalReceiver(ServerConfigScreenPayload.ID, (payload, context) -> {
-                context.client().execute(() -> MinecraftClient.getInstance().setScreen(new ServerConfigScreen(
-                    MinecraftClient.getInstance().currentScreen,
+                context.client().execute(() -> Minecraft.getInstance().gui.setScreen(new ServerConfigScreen(
+                    Minecraft.getInstance().gui.screen(),
                     payload.useTpa(), payload.historyEnabled(), payload.templateDebug(),
                     payload.mediaEnabled(), payload.mediaAutoClean(),
                     payload.chatTemplates(), payload.whisperTemplates())));
@@ -456,10 +456,10 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
      *
      * <p>空闲时每帧只做一次空集合判断，开销可忽略。
      */
-    private static synchronized void cleanupChannelsAfterWorldExit(MinecraftClient client) {
+    private static synchronized void cleanupChannelsAfterWorldExit(Minecraft client) {
         if (activeChannelIds.isEmpty()) return;
         if (connectionPending || !playSessionSeen) return;   // 正在连接 / 还没进过世界
-        if (client.world != null || client.getNetworkHandler() != null) return;  // 还在世界里
+        if (client.level != null || client.getConnection() != null) return;  // 还在世界里
         playSessionSeen = false;
         unregisterCustomChannels("left world (tick fallback)");
     }
@@ -501,15 +501,15 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        Path configDir = MinecraftClient.getInstance().runDirectory.toPath().resolve("config/e33chat");
+        Path configDir = Minecraft.getInstance().gameDirectory.toPath().resolve("config/e33chat");
         configPath = configDir.resolve("e33chat-client.json");
         // Migration chain for the client config path (most recent first):
         // config/e33chat/client.json -> config/e33chat/e33chat-client.json
         // config/e33chat-client.json (2.3.1+) and config/e33chat.json (legacy) also move here.
         var logger = com.mojang.logging.LogUtils.getLogger();
         Path recentDirPath = configDir.resolve("client.json");
-        Path legacyPath = MinecraftClient.getInstance().runDirectory.toPath().resolve("config/e33chat-client.json");
-        Path oldFlatPath = MinecraftClient.getInstance().runDirectory.toPath().resolve("config/e33chat.json");
+        Path legacyPath = Minecraft.getInstance().gameDirectory.toPath().resolve("config/e33chat-client.json");
+        Path oldFlatPath = Minecraft.getInstance().gameDirectory.toPath().resolve("config/e33chat.json");
         if (!Files.exists(configPath)) {
             if (Files.exists(recentDirPath)) {
                 try {
@@ -581,7 +581,7 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                 .register((handler, client) -> {
                     try {
                         connectionPending = true;
-                        if (client.getServer() == null) {
+                        if (client.getSingleplayerServer() == null) {
                             decideConfigurationChannels(handler, client, "init");
                         }
                     } catch (Throwable t) {
@@ -627,7 +627,7 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                     String joinAddr = currentServerAddress(client);
                     // 集成服务器（单机 / 自己是局域网主机）永远不按地址注销：它的 serverInfo
                     // 不是「远程服务器地址」语义，拿去比对远程白名单只会误杀单机联动。
-                    boolean joinIntegrated = client.getServer() != null;
+                    boolean joinIntegrated = client.getSingleplayerServer() != null;
                     if (!joinIntegrated
                         && joinAddr != null
                         && !isLocalAddress(joinAddr)
@@ -645,7 +645,7 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                     // 才会为 QuoteSyncPayload 注册接收器）。该探测与「是否声明通道」
                     // （forceOff / 白名单）无关，所以必须放在 forceOff 早退之前 —— 否则开着
                     // forceOff 的玩家永远拿不到结果，私聊提示也就永远不出现。
-                    boolean integrated = client.getServer() != null;
+                    boolean integrated = client.getSingleplayerServer() != null;
                     boolean serverHasE33 = integrated
                         || net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.canSend(
                             com.niuqu.chatbubble.network.QuoteSyncPayload.ID);
@@ -680,8 +680,8 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                         addr);
                     client.execute(() -> {
                         if (client.player != null) {
-                            client.player.sendMessage(
-                                net.minecraft.text.Text.translatable("e33chat.channels.auto_enabled"), false);
+                            client.player.sendSystemMessage(
+                                net.minecraft.network.chat.Component.translatable("e33chat.channels.auto_enabled"));
                         }
                     });
                 } catch (Throwable ignored) {
@@ -725,10 +725,14 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
         ChatMessageStore.setMessageEffectObserver(
             new com.niuqu.chatbubble.chat.notification.ChatMessageEffects());
 
-        HudRenderCallback.EVENT.register((drawContext, tickDelta) -> {
-            if (!config.enabled()) return;
-            ChatBubbleHudOverlay.render(drawContext);
-        });
+        // 26.3: HudRenderCallback 已删除，HUD 改由 fabric-rendering-v1 的 HudElementRegistry 注册。
+        // addLast = 排到所有原版 HUD 元素之后，与旧 HudRenderCallback.EVENT（HUD 绘制末尾）等价。
+        HudElementRegistry.addLast(
+            Identifier.fromNamespaceAndPath(ChatBubbleMod.MOD_ID, "chat_icon"),
+            (drawContext, deltaTracker) -> {
+                if (!config.enabled()) return;
+                ChatBubbleHudOverlay.render(drawContext);
+            });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             lastTickMs = System.currentTimeMillis();
@@ -739,26 +743,25 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
             if (!config.enabled()) return;
 
             String key;
-            if (client.world == null || client.player == null) {
+            if (client.level == null || client.player == null) {
                 key = null;
-            } else if (client.getServer() != null) {
-                key = "SP:" + client.getServer().getSaveProperties().getLevelName();
-            } else if (client.getCurrentServerEntry() != null) {
-                key = "MP:" + client.getCurrentServerEntry().name;
+            } else if (client.getSingleplayerServer() != null) {
+                key = "SP:" + client.getSingleplayerServer().getWorldData().getLevelName();
+            } else if (client.getCurrentServer() != null) {
+                key = "MP:" + client.getCurrentServer().name;
             } else {
                 key = "world";
             }
             ChatMessageStore.setCurrentWorld(key);
             ChatMessageStore.maybeAutoSave();
 
-            if (client.currentScreen == null) {
-                boolean leftDown = org.lwjgl.glfw.GLFW.glfwGetMouseButton(
-                    client.getWindow().getHandle(), org.lwjgl.glfw.GLFW.GLFW_MOUSE_BUTTON_1) == org.lwjgl.glfw.GLFW.GLFW_PRESS;
+            if (client.gui.screen() == null) {
+                boolean leftDown = client.mouseHandler.isLeftPressed();
                 if (leftDown && !leftWasDown) {
-                    double mx = client.mouse.getX() * (double)client.getWindow().getScaledWidth() / (double)client.getWindow().getWidth();
-                    double my = client.mouse.getY() * (double)client.getWindow().getScaledHeight() / (double)client.getWindow().getHeight();
+                    double mx = client.mouseHandler.xpos() * (double)client.getWindow().getGuiScaledWidth() / (double)client.getWindow().getWidth();
+                    double my = client.mouseHandler.ypos() * (double)client.getWindow().getGuiScaledHeight() / (double)client.getWindow().getHeight();
                     if (ChatBubbleHudOverlay.isMouseOverIcon(mx, my)) {
-                        client.setScreen(new ChatBubbleScreen(""));
+                        client.gui.setScreen(new ChatBubbleScreen(""));
                     }
                 }
                 leftWasDown = leftDown;
@@ -768,19 +771,19 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
         });
 
         ScreenEvents.BEFORE_INIT.register((client, screen, width, height) ->
-            ScreenEvents.afterRender(screen).register((scr, g, mouseX, mouseY, delta) -> {
+            ScreenEvents.afterExtract(screen).register((scr, g, mouseX, mouseY, delta) -> {
                 if (config.enabled()) ChatBubbleHudOverlay.renderBannerForScreen(g);
             })
         );
 
-        ResourceManagerHelper.get(ResourceType.CLIENT_RESOURCES).registerReloadListener(
+        ResourceManagerHelper.get(PackType.CLIENT_RESOURCES).registerReloadListener(
             new SimpleSynchronousResourceReloadListener() {
                 @Override
                 public Identifier getFabricId() {
-                    return Identifier.of(ChatBubbleMod.MOD_ID, "shader_reload");
+                    return Identifier.fromNamespaceAndPath(ChatBubbleMod.MOD_ID, "shader_reload");
                 }
                 @Override
-                public void reload(ResourceManager manager) {
+                public void onResourceManagerReload(ResourceManager manager) {
                     RoundRectRenderer.resetShader();
                 }
             }

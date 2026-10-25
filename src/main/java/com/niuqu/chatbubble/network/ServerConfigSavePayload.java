@@ -3,13 +3,13 @@ package com.niuqu.chatbubble.network;
 import com.niuqu.chatbubble.config.ServerConfig;
 import com.niuqu.chatbubble.config.ServerConfigManager;
 import com.niuqu.chatbubble.chat.TemplateMatcher;
-import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.server.network.ServerPlayerEntity;
-import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
-import net.minecraft.util.Identifier;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.network.chat.Component;
+import net.minecraft.ChatFormatting;
+import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -21,12 +21,12 @@ import java.util.List;
 public record ServerConfigSavePayload(boolean useTpa, boolean historyEnabled, boolean templateDebug,
                                       boolean mediaEnabled, boolean mediaAutoClean,
                                       List<String> chatTemplates, List<String> whisperTemplates)
-        implements CustomPayload {
+        implements CustomPacketPayload {
 
-    public static final CustomPayload.Id<ServerConfigSavePayload> ID =
-        new CustomPayload.Id<>(Identifier.of("e33chat", "server_config_save"));
+    public static final CustomPacketPayload.Type<ServerConfigSavePayload> ID =
+        new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("e33chat", "server_config_save"));
 
-    public static final PacketCodec<PacketByteBuf, ServerConfigSavePayload> CODEC = PacketCodec.of(
+    public static final StreamCodec<FriendlyByteBuf, ServerConfigSavePayload> CODEC = StreamCodec.ofMember(
         (value, buf) -> ServerConfigDto.encode(new ServerConfigDto(
             value.useTpa, value.historyEnabled, value.templateDebug, value.mediaEnabled,
             value.mediaAutoClean, value.chatTemplates, value.whisperTemplates), buf),
@@ -38,16 +38,16 @@ public record ServerConfigSavePayload(boolean useTpa, boolean historyEnabled, bo
     );
 
     @Override
-    public Id<ServerConfigSavePayload> getId() { return ID; }
+    public Type<ServerConfigSavePayload> type() { return ID; }
 
     /** Server-side handler: validate, persist, rebroadcast (called from ChatBubbleMod). */
-    public static void handleServer(ServerConfigSavePayload payload, ServerPlayerEntity player,
+    public static void handleServer(ServerConfigSavePayload payload, ServerPlayer player,
                                     java.util.function.Consumer<ServerConfig> applyAndSave) {
-        Text error = validateTemplates(true, payload.chatTemplates());
+        Component error = validateTemplates(true, payload.chatTemplates());
         if (error == null) error = validateTemplates(false, payload.whisperTemplates());
         if (error != null) {
-            player.sendMessage(Text.translatable("e33chat.server.save_failed", error)
-                .formatted(Formatting.RED), false);
+            player.sendSystemMessage(Component.translatable("e33chat.server.save_failed", error)
+                .withStyle(ChatFormatting.RED));
             return;
         }
         ServerConfig cfg = new ServerConfig();
@@ -59,15 +59,15 @@ public record ServerConfigSavePayload(boolean useTpa, boolean historyEnabled, bo
         cfg.chat_templates = new ArrayList<>(payload.chatTemplates());
         cfg.whisper_templates = new ArrayList<>(payload.whisperTemplates());
         applyAndSave.accept(cfg);
-        player.sendMessage(Text.translatable("e33chat.server.saved"), false);
+        player.sendSystemMessage(Component.translatable("e33chat.server.saved"));
     }
 
-    private static Text validateTemplates(boolean chat, List<String> templates) {
+    private static Component validateTemplates(boolean chat, List<String> templates) {
         for (int i = 0; i < templates.size(); i++) {
             TemplateMatcher.CompileResult result = TemplateMatcher.compile(templates.get(i));
             if (result.template() == null) {
-                return Text.translatable("e33chat.server.template_invalid",
-                    Text.translatable(chat ? "e33chat.server.kind_chat" : "e33chat.server.kind_whisper"),
+                return Component.translatable("e33chat.server.template_invalid",
+                    Component.translatable(chat ? "e33chat.server.kind_chat" : "e33chat.server.kind_whisper"),
                     i + 1, result.error());
             }
         }

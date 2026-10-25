@@ -2,9 +2,9 @@ package com.niuqu.chatbubble.chat.notification;
 
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
 import com.niuqu.chatbubble.store.ChatMessageStore;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.sound.SoundEvents;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.network.chat.Component;
 
 import java.util.UUID;
 
@@ -15,18 +15,18 @@ import java.util.UUID;
  */
 public class ChatMessageEffects implements ChatMessageStore.MessageEffectObserver {
     @Override
-    public void onMentionOrQuote(Text content, ChatMessageStore.SenderMeta meta,
+    public void onMentionOrQuote(Component content, ChatMessageStore.SenderMeta meta,
                                  int index, String replySender) {
         MentionNotificationController.INSTANCE.onMessageCaptured(content, meta, index, replySender);
     }
 
     @Override
-    public void onWhisperReceived(UUID senderUUID, Text senderName, Text content, int index, String partnerName) {
+    public void onWhisperReceived(UUID senderUUID, Component senderName, Component content, int index, String partnerName) {
         MentionNotificationController.INSTANCE.onWhisperReceived(senderUUID, senderName, content, index, partnerName);
     }
 
     @Override
-    public void onSystemMessage(Text content, int index) {
+    public void onSystemMessage(Component content, int index) {
         MentionNotificationController.INSTANCE.onSystemMessage(content, index);
     }
 
@@ -41,9 +41,9 @@ public class ChatMessageEffects implements ChatMessageStore.MessageEffectObserve
     }
 
     private static void playChime() {
-        var player = MinecraftClient.getInstance().player;
+        var player = Minecraft.getInstance().player;
         if (player != null)
-            player.playSound(SoundEvents.BLOCK_NOTE_BLOCK_CHIME.value(), 0.6F * ChatBubbleClientSetup.config().soundVolume() / 100f, 1.0F);
+            player.playSound(SoundEvents.NOTE_BLOCK_CHIME.value(), 0.6F * ChatBubbleClientSetup.config().soundVolume() / 100f, 1.0F);
     }
 
     /**

@@ -6,11 +6,11 @@ import com.niuqu.chatbubble.image.BracketCodec;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.store.ChatMessageStore.ChatMessage;
 
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.font.TextRenderer;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.text.OrderedText;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.util.FormattedCharSequence;
+import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -130,17 +130,17 @@ public final class PublicChatOverlay {
      * @param x     面板左边（与聊天图标左对齐）
      * @param iconY 聊天图标顶边（面板底边放在它上方 {@link #GAP_ABOVE_ICON}px）
      */
-    public static void render(DrawContext g, int x, int iconY) {
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc == null || mc.textRenderer == null) return;
+    public static void render(UiCanvas g, int x, int iconY) {
+        Minecraft mc = Minecraft.getInstance();
+        if (mc == null || mc.font == null) return;
         ChatBubbleConfig cfg = ChatBubbleClientSetup.config();
         if (cfg == null || Boolean.FALSE.equals(cfg.publicOverlayEnabled())) {
             reset();
             return;
         }
 
-        TextRenderer tr = mc.textRenderer;
-        int screenW = mc.getWindow().getScaledWidth();
+        Font tr = mc.font;
+        int screenW = mc.getWindow().getGuiScaledWidth();
         int panelW = Math.max(MIN_PANEL_W, Math.min(PANEL_W, screenW - 8));
         int textW = panelW - PAD * 2;
         long now = System.currentTimeMillis();
@@ -173,7 +173,7 @@ public final class PublicChatOverlay {
         int fadeRows = 0;
         for (View v : fading) fadeRows += v.rows();
 
-        int lineH = tr.fontHeight + 1;
+        int lineH = tr.lineHeight + 1;
         int panelH = shownRows * lineH + PAD * 2;
         int top = iconY - GAP_ABOVE_ICON - panelH;
         // 淡出行占位在常驻行之上；t=0 时整块再往下滑 slideRows 行，动画结束时归位
@@ -265,7 +265,7 @@ public final class PublicChatOverlay {
         seenActivityVer = -1L;
     }
 
-    private static int drawView(DrawContext g, TextRenderer tr, ChatBubbleTheme.Colors c,
+    private static int drawView(UiCanvas g, Font tr, ChatBubbleTheme.Colors c,
                                 View v, int x, int y, int lineH, float alpha) {
         int a = Math.max(0, Math.min(255, Math.round(alpha * 255f)));
         if (a > 0) {
@@ -282,7 +282,7 @@ public final class PublicChatOverlay {
 
     // ---- 快照刷新（只在「消息变了」或「宽度变了」时跑） ----
 
-    private static void refresh(TextRenderer tr, int textW, long now) {
+    private static void refresh(Font tr, int textW, long now) {
         int size = ChatMessageStore.size();
         ChatMessage tail = size > 0 ? ChatMessageStore.getMessageAt(size - 1) : null;
         long sig = signature(size, tail, textW);
@@ -371,7 +371,7 @@ public final class PublicChatOverlay {
      * 缓存命中时只在「宽度或名字/正文变了」才重排，避免每次刷新都重新量宽度换行。
      * 换行宽度用 {@link TextRenderer#wrapLines} 的真实字体度量，不按字符数估算。
      */
-    private static void layout(TextRenderer tr, View v, ChatMessage m, int textW) {
+    private static void layout(Font tr, View v, ChatMessage m, int textW) {
         String rawName = cleanName(m);
         String body = cleanBody(m);
         if (v.layoutW == textW && rawName.equals(v.rawName) && body.equals(v.body)) return;
@@ -379,25 +379,25 @@ public final class PublicChatOverlay {
         v.rawName = rawName;
         v.body = body;
 
-        int ellW = tr.getWidth("...");
+        int ellW = tr.width("...");
         int maxNameW = Math.max(24, textW / 2);
         String name = rawName;
-        if (tr.getWidth(name) > maxNameW - ellW) {
-            name = tr.trimToWidth(Text.literal(name), Math.max(1, maxNameW - ellW)).getString() + "...";
+        if (tr.width(name) > maxNameW - ellW) {
+            name = tr.substrByWidth(Component.literal(name), Math.max(1, maxNameW - ellW)).getString() + "...";
         }
         v.name = name + ":";
         // 缩进 = 名字 + 冒号 + 一个空格；至少要给正文留 24px
-        v.indent = Math.max(0, Math.min(textW - 24, tr.getWidth(v.name) + tr.getWidth(" ")));
+        v.indent = Math.max(0, Math.min(textW - 24, tr.width(v.name) + tr.width(" ")));
         v.wrapW = Math.max(24, textW - v.indent);
 
         v.lines.clear();
-        for (OrderedText line : tr.wrapLines(Text.literal(v.body), v.wrapW)) {
+        for (FormattedCharSequence line : tr.split(Component.literal(v.body), v.wrapW)) {
             v.lines.add(plain(line));
         }
         truncate(tr, v, MAX_ROWS);
     }
 
-    private static void truncate(TextRenderer tr, View v, int maxRows) {
+    private static void truncate(Font tr, View v, int maxRows) {
         if (v.lines.size() <= maxRows) return;
         while (v.lines.size() > maxRows) {
             v.lines.remove(v.lines.size() - 1);
@@ -405,8 +405,8 @@ public final class PublicChatOverlay {
         if (!v.lines.isEmpty()) {
             int i = v.lines.size() - 1;
             String ell = "...";
-            int avail = Math.max(1, v.wrapW - tr.getWidth(ell));
-            v.lines.set(i, tr.trimToWidth(Text.literal(v.lines.get(i)), avail).getString() + ell);
+            int avail = Math.max(1, v.wrapW - tr.width(ell));
+            v.lines.set(i, tr.substrByWidth(Component.literal(v.lines.get(i)), avail).getString() + ell);
         }
     }
 
@@ -444,17 +444,17 @@ public final class PublicChatOverlay {
 
     /** 正文去掉图片/表情括号码（[[CICode,...]] 之类），并把换行压成空格。 */
     private static String cleanBody(ChatMessage m) {
-        Text body = m.content() == null ? Text.empty() : BracketCodec.parse(m.content()).textWithoutImages();
+        Component body = m.content() == null ? Component.empty() : BracketCodec.parse(m.content()).textWithoutImages();
         String s = stripSection(body.getString()).replace('\n', ' ').trim();
         // 纯图片/表情消息剥完只剩空串：给个 [图片] 占位，避免小窗里只显示一个名字
-        return s.isEmpty() ? Text.translatable("e33chat.image.placeholder").getString() : s;
+        return s.isEmpty() ? Component.translatable("e33chat.image.placeholder").getString() : s;
     }
 
     private static String stripSection(String s) {
         return s.indexOf('\u00A7') < 0 ? s : s.replaceAll("\u00A7.", "");
     }
 
-    private static String plain(OrderedText line) {
+    private static String plain(FormattedCharSequence line) {
         StringBuilder sb = new StringBuilder();
         line.accept((i, style, cp) -> {
             sb.appendCodePoint(cp);

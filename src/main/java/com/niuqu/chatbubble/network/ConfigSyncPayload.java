@@ -1,24 +1,24 @@
 package com.niuqu.chatbubble.network;
 
 import com.niuqu.chatbubble.store.ChatMessageStore;
-import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.util.Identifier;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.Identifier;
 
 /** Server -> client sync of server-side settings (currently: use_tpa). */
-public record ConfigSyncPayload(boolean useTpa) implements CustomPayload {
+public record ConfigSyncPayload(boolean useTpa) implements CustomPacketPayload {
 
-    public static final CustomPayload.Id<ConfigSyncPayload> ID =
-        new CustomPayload.Id<>(Identifier.of("e33chat", "config_sync"));
+    public static final CustomPacketPayload.Type<ConfigSyncPayload> ID =
+        new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("e33chat", "config_sync"));
 
-    public static final PacketCodec<PacketByteBuf, ConfigSyncPayload> CODEC = PacketCodec.of(
+    public static final StreamCodec<FriendlyByteBuf, ConfigSyncPayload> CODEC = StreamCodec.ofMember(
         (value, buf) -> buf.writeBoolean(value.useTpa),
         buf -> new ConfigSyncPayload(buf.readBoolean())
     );
 
     @Override
-    public Id<ConfigSyncPayload> getId() { return ID; }
+    public Type<ConfigSyncPayload> type() { return ID; }
 
     public static void handle(ConfigSyncPayload payload) {
         ChatMessageStore.setServerUseTpa(payload.useTpa());

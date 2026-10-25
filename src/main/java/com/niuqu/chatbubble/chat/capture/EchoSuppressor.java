@@ -2,7 +2,7 @@ package com.niuqu.chatbubble.chat.capture;
 
 import com.niuqu.chatbubble.chat.WhisperSignal;
 import com.niuqu.chatbubble.store.ChatMessageStore;
-import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.Minecraft;
 
 /**
  * Outgoing whisper-echo suppression decision (the text-path branch that runs
@@ -23,12 +23,12 @@ public final class EchoSuppressor {
             || WhisperSignal.EN.matcher(sysText.toLowerCase()).find();
         ChatMessageStore.debugLog(() -> "[e33chat] System(echo check) | text='" + sysText + "' | flag=" + hasEchoFlag + " | kw=" + hasKw);
         if (hasEchoFlag && hasKw) {
-            var player = MinecraftClient.getInstance().player;
+            var player = Minecraft.getInstance().player;
             boolean otherPlayerFound = false;
-            if (player != null && player.networkHandler != null) {
+            if (player != null && player.connection != null) {
                 String myName = player.getName().getString();
                 String skipTarget = ChatMessageStore.getPendingWhisperTarget();
-                for (var info : player.networkHandler.getPlayerList()) {
+                for (var info : player.connection.getOnlinePlayers()) {
                     for (String cand : ChatClassifier.nameCandidates(info)) {
                         if (cand.equals(myName) || cand.isEmpty()) continue;
                         if (cand.equals(skipTarget)) continue;

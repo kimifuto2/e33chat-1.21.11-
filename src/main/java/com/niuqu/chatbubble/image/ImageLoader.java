@@ -14,11 +14,11 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.texture.NativeImageBackedTexture;
-import net.minecraft.client.texture.TextureManager;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.client.renderer.texture.DynamicTexture;
+import net.minecraft.client.renderer.texture.TextureManager;
+import net.minecraft.resources.Identifier;
 import org.slf4j.Logger;
 
 /**
@@ -96,10 +96,10 @@ public final class ImageLoader {
     public static void setEnabled(boolean e) {
         enabled = e;
         if (!e) {
-            MinecraftClient.getInstance().execute(() -> {
-                TextureManager tm = MinecraftClient.getInstance().getTextureManager();
+            Minecraft.getInstance().execute(() -> {
+                TextureManager tm = Minecraft.getInstance().getTextureManager();
                 for (String u : CACHE.keySet()) {
-                    tm.destroyTexture(Identifier.of("e33chat", "img/" + hash(u)));
+                    tm.release(Identifier.fromNamespaceAndPath("e33chat", "img/" + hash(u)));
                 }
                 CACHE.clear();
                 LRU.clear();
@@ -151,8 +151,8 @@ public final class ImageLoader {
                 CACHE.remove(url, e);
                 if (e.state() == ImageEntry.State.LOADED && e.textureId() != null) {
                     Identifier id = e.textureId();
-                    MinecraftClient.getInstance().execute(() -> {
-                        MinecraftClient.getInstance().getTextureManager().destroyTexture(id);
+                    Minecraft.getInstance().execute(() -> {
+                        Minecraft.getInstance().getTextureManager().release(id);
                     });
                 }
                 VERSION.incrementAndGet();
@@ -320,7 +320,7 @@ public final class ImageLoader {
 
             final RasterImageDecoder.DecodedImage uploadImage = decoded;
             // Upload on the render thread, then flip state.
-            MinecraftClient.getInstance().execute(() -> {
+            Minecraft.getInstance().execute(() -> {
                 if (entry.state() != ImageEntry.State.LOADING) {
                     uploadImage.image().close();
                     LOGGER.info("[e33chat] image upload SKIPPED (state {}) for {}", entry.state(), url);
@@ -331,10 +331,10 @@ public final class ImageLoader {
                 // Re-register unconditionally (destroy first to avoid leaking the
                 // previous NativeImageBackedTexture on cache eviction + reload).
                 try {
-                    Identifier id = Identifier.of("e33chat", "img/" + hash(url));
-                    TextureManager tm = MinecraftClient.getInstance().getTextureManager();
-                    tm.destroyTexture(id);
-                    tm.registerTexture(id, new NativeImageBackedTexture(() -> "e33chat_uploaded", uploadImage.image()));
+                    Identifier id = Identifier.fromNamespaceAndPath("e33chat", "img/" + hash(url));
+                    TextureManager tm = Minecraft.getInstance().getTextureManager();
+                    tm.release(id);
+                    tm.register(id, new DynamicTexture(() -> "e33chat_uploaded", uploadImage.image()));
                     entry.markLoaded(id, uploadImage.image());
                     LOGGER.info("[e33chat] image upload OK {} -> {}x{} @ {}", url, entry.width(), entry.height(), id);
                 } catch (Throwable t) {

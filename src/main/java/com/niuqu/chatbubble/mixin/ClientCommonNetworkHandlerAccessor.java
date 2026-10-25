@@ -1,7 +1,7 @@
 package com.niuqu.chatbubble.mixin;
 
-import net.minecraft.client.network.ClientCommonNetworkHandler;
-import net.minecraft.client.network.ServerInfo;
+import net.minecraft.client.multiplayer.ClientCommonPacketListenerImpl;
+import net.minecraft.client.multiplayer.ServerData;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.gen.Accessor;
 
@@ -17,8 +17,8 @@ import org.spongepowered.asm.mixin.gen.Accessor;
  * {@code ClientConnectionState.serverInfo()}, so it is already populated during configuration;
  * both {@code ClientConfigurationNetworkHandler} and {@code ClientPlayNetworkHandler} inherit it.
  */
-@Mixin(ClientCommonNetworkHandler.class)
+@Mixin(ClientCommonPacketListenerImpl.class)
 public interface ClientCommonNetworkHandlerAccessor {
-    @Accessor("serverInfo")
-    ServerInfo e33chat$getServerInfo();
+    @Accessor("serverData")
+    ServerData e33chat$getServerInfo();
 }

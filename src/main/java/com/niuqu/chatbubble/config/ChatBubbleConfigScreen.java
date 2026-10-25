@@ -3,6 +3,7 @@ import com.niuqu.chatbubble.ChatBubbleClientSetup;
 
 import com.niuqu.chatbubble.config.ChatBubbleConfig;
 import com.niuqu.chatbubble.channeldiet.ChannelDietFilter;
+import com.niuqu.chatbubble.input.MouseButtons;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.render.ChatBubbleTheme;
@@ -15,19 +16,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.function.Supplier;
-import net.minecraft.client.gui.DrawContext;
-import net.minecraft.client.gui.Click;
-import net.minecraft.client.gui.tooltip.HoveredTooltipPositioner;
-import net.minecraft.client.gui.screen.ConfirmScreen;
-import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.widget.ButtonWidget;
-import net.minecraft.client.gui.widget.ClickableWidget;
-import net.minecraft.client.gui.widget.SliderWidget;
-import net.minecraft.client.gui.widget.TextFieldWidget;
-import net.minecraft.screen.ScreenTexts;
-import net.minecraft.text.Text;
+import com.niuqu.chatbubble.render.UiCanvas;
+import net.minecraft.client.gui.GuiGraphicsExtractor;
+import net.minecraft.client.input.MouseButtonEvent;
+import net.minecraft.client.gui.screens.ConfirmScreen;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.gui.components.Button;
+import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.AbstractSliderButton;
+import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.network.chat.CommonComponents;
+import net.minecraft.network.chat.Component;
 import net.minecraft.util.Util;
-import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.Mth;
 
 public class ChatBubbleConfigScreen extends Screen {
     private final Screen lastScreen;
@@ -82,7 +83,7 @@ public class ChatBubbleConfigScreen extends Screen {
     private int selectedSub = -1;
     private final com.niuqu.chatbubble.render.SmoothScrollPane rightPane = new com.niuqu.chatbubble.render.SmoothScrollPane();
     private final com.niuqu.chatbubble.render.SmoothScrollPane treePane = new com.niuqu.chatbubble.render.SmoothScrollPane();
-    private final List<ClickableWidget> scrollWidgets = new ArrayList<>();
+    private final List<AbstractWidget> scrollWidgets = new ArrayList<>();
     private final boolean[] expanded = {true, true, true, true, true};
 
     // ---- mutable copies (loadFromConfig → widget edits → saveToConfig) ----
@@ -132,15 +133,15 @@ public class ChatBubbleConfigScreen extends Screen {
     }
     private final List<Tracked> tracked = new ArrayList<>();
 
-    private ButtonWidget doneBtn, exitBtn, saveBtn;
+    private Button doneBtn, exitBtn, saveBtn;
 
     private interface WidgetFactory {
-        ClickableWidget create(int y);
+        AbstractWidget create(int y);
     }
 
     // 一个选项行可生成多个控件（如 [编辑框][删除]），配合 rows 占多行
     private interface WidgetsFactory {
-        List<ClickableWidget> create(int y);
+        List<AbstractWidget> create(int y);
     }
 
     private record Opt(String key, WidgetFactory factory, WidgetsFactory multiFactory,
@@ -338,7 +339,7 @@ public class ChatBubbleConfigScreen extends Screen {
         relayoutWidgets();
     }
 
-    private void drawBar(DrawContext g, int trackX, int top, int bot,
+    private void drawBar(UiCanvas g, int trackX, int top, int bot,
                          int totalH, int offset, int maxScroll,
                          double mx, double my, boolean dragging) {
         if (maxScroll <= 0) return;
@@ -365,13 +366,13 @@ public class ChatBubbleConfigScreen extends Screen {
             if (opt.multiFactory() != null) {
                 for (int k = 0; k < count; k++) {
                     if (wi < scrollWidgets.size()) {
-                        ClickableWidget w = scrollWidgets.get(wi++);
+                        AbstractWidget w = scrollWidgets.get(wi++);
                         w.setY(y);
                         w.visible = y >= viewTop() && y + 20 <= viewBottom();
                     }
                 }
             } else if (wi < scrollWidgets.size()) {
-                ClickableWidget w = scrollWidgets.get(wi++);
+                AbstractWidget w = scrollWidgets.get(wi++);
                 w.setY(y);
                 w.visible = y >= viewTop() && y + 20 <= viewBottom();
             }
@@ -593,28 +594,28 @@ public class ChatBubbleConfigScreen extends Screen {
         for (int i = 0; i < blockedPlayers.size(); i++) {
             int idx = i;
             chat.add(Opt.multi("e33chat.config.blocked_players", y -> {
-                TextFieldWidget box = new TextFieldWidget(textRenderer, inputX, y, INPUT_W - 24, 20, Text.literal(""));
-                box.setText(blockedPlayers.get(idx));
+                EditBox box = new EditBox(font, inputX, y, INPUT_W - 24, 20, Component.literal(""));
+                box.setValue(blockedPlayers.get(idx));
                 box.setMaxLength(32);
-                box.setChangedListener(s -> {
+                box.setResponder(s -> {
                     if (idx < blockedPlayers.size() && !s.equals(blockedPlayers.get(idx))) {
                         blockedPlayers.set(idx, s.trim());
                         ChatMessageStore.purgeBlocked(blockedPlayers);
                     }
                 });
-                ButtonWidget rm = ButtonWidget.builder(Text.literal("✕"), b -> {
+                Button rm = Button.builder(Component.literal("✕"), b -> {
                     blockedPlayers.remove(idx);
                     ChatMessageStore.purgeBlocked(blockedPlayers);
                     rebuild();
-                }).position(inputX + INPUT_W - 22, y).size(20, 20).build();
+                }).pos(inputX + INPUT_W - 22, y).size(20, 20).build();
                 return List.of(box, rm);
             }, 1));
         }
         chat.add(Opt.multi("e33chat.config.blocked_add", y -> {
-            ButtonWidget add = ButtonWidget.builder(Text.translatable("e33chat.config.blocked_add"), b -> {
+            Button add = Button.builder(Component.translatable("e33chat.config.blocked_add"), b -> {
                 blockedPlayers.add("");
                 rebuild();
-            }).position(inputX, y).size(72, 20).build();
+            }).pos(inputX, y).size(72, 20).build();
             return List.of(add);
         }, 1));
     }
@@ -642,10 +643,10 @@ public class ChatBubbleConfigScreen extends Screen {
             case TEXT -> {
                 Ref<String> r = (Ref<String>) d.ref();
                 yield new Opt(d.key(), y -> {
-                    TextFieldWidget box = new TextFieldWidget(textRenderer, inputX, y, INPUT_W, 20, Text.literal(""));
-                    box.setText(r.getter().get());
+                    EditBox box = new EditBox(font, inputX, y, INPUT_W, 20, Component.literal(""));
+                    box.setValue(r.getter().get());
                     box.setMaxLength(512);
-                    box.setChangedListener(r.setter()::accept);
+                    box.setResponder(r.setter()::accept);
                     return box;
                 }, d.previewColor(), d.ref());
             }
@@ -665,7 +666,7 @@ public class ChatBubbleConfigScreen extends Screen {
     }
 
     public ChatBubbleConfigScreen(Screen lastScreen) {
-        super(Text.translatable("e33chat.config.title"));
+        super(Component.translatable("e33chat.config.title"));
         this.lastScreen = lastScreen;
         loadFromConfig();
         snapshotAll();
@@ -682,32 +683,32 @@ public class ChatBubbleConfigScreen extends Screen {
         previewX = width - 26;
         inputX = previewX - 8 - INPUT_W;
 
-        rightPane.setOffset(MathHelper.clamp(rightPane.offset(), 0, calcMaxScroll()));
-        treePane.setOffset(MathHelper.clamp(treePane.offset(), 0, calcTreeMaxScroll()));
+        rightPane.setOffset(Mth.clamp(rightPane.offset(), 0, calcMaxScroll()));
+        treePane.setOffset(Mth.clamp(treePane.offset(), 0, calcTreeMaxScroll()));
 
         int y = viewTop() - rightPane.offset();
         for (Opt opt : visibleOpts()) {
             if (opt.isHeader()) { y += HEADER_H; continue; }
             if (opt.multiFactory() != null) {
-                for (ClickableWidget w : opt.multiFactory().create(y)) {
+                for (AbstractWidget w : opt.multiFactory().create(y)) {
                     w.visible = y >= viewTop() && y + 20 <= viewBottom();
-                    scrollWidgets.add(addDrawableChild(w));
+                    scrollWidgets.add(addRenderableWidget(w));
                 }
                 y += ROW_H * opt.rows();
                 continue;
             }
-            ClickableWidget w = opt.factory().create(y);
+            AbstractWidget w = opt.factory().create(y);
             w.visible = y >= viewTop() && y + 20 <= viewBottom();
-            scrollWidgets.add(addDrawableChild(w));
+            scrollWidgets.add(addRenderableWidget(w));
             y += ROW_H;
         }
 
-        doneBtn = addDrawableChild(ButtonWidget.builder(ScreenTexts.DONE, btn -> doClose())
-            .position(width / 2 - 100, height - 32).size(200, 20).build());
-        exitBtn = addDrawableChild(ButtonWidget.builder(Text.translatable("e33chat.config.exit"), btn -> doExit())
-            .position(width / 2 - 104, height - 32).size(100, 20).build());
-        saveBtn = addDrawableChild(ButtonWidget.builder(Text.translatable("e33chat.config.save"), btn -> doClose())
-            .position(width / 2 + 4, height - 32).size(100, 20).build());
+        doneBtn = addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, btn -> doClose())
+            .pos(width / 2 - 100, height - 32).size(200, 20).build());
+        exitBtn = addRenderableWidget(Button.builder(Component.translatable("e33chat.config.exit"), btn -> doExit())
+            .pos(width / 2 - 104, height - 32).size(100, 20).build());
+        saveBtn = addRenderableWidget(Button.builder(Component.translatable("e33chat.config.save"), btn -> doClose())
+            .pos(width / 2 + 4, height - 32).size(100, 20).build());
     }
 
     private void switchCategory(int idx) {
@@ -729,7 +730,7 @@ public class ChatBubbleConfigScreen extends Screen {
     private void rebuild() {
         rightPane.setOffset(0);
         setFocused(null);
-        clearChildren();
+        clearWidgets();
         init();
     }
 
@@ -753,41 +754,41 @@ public class ChatBubbleConfigScreen extends Screen {
 
     // ---- widget factories ----
 
-    private ButtonWidget mkThemeButton(int y) {
-        return ButtonWidget.builder(
-            Text.translatable("e33chat.theme." + theme.name().toLowerCase()),
+    private Button mkThemeButton(int y) {
+        return Button.builder(
+            Component.translatable("e33chat.theme." + theme.name().toLowerCase()),
             btn -> {
                 int next = (theme.ordinal() + 1) % ChatBubbleTheme.values().length;
                 theme = ChatBubbleTheme.values()[next];
-                btn.setMessage(Text.translatable("e33chat.theme." + theme.name().toLowerCase()));
+                btn.setMessage(Component.translatable("e33chat.theme." + theme.name().toLowerCase()));
             }
-        ).position(inputX, y).size(INPUT_W, 20).build();
+        ).pos(inputX, y).size(INPUT_W, 20).build();
     }
 
-    private ButtonWidget mkAccentButton(int y) {
+    private Button mkAccentButton(int y) {
         ChatBubbleTheme.Accent[] values = ChatBubbleTheme.Accent.values();
-        return ButtonWidget.builder(
-            Text.translatable("e33chat.accent." + (themeAccent != null ? themeAccent.key() : "blue")),
+        return Button.builder(
+            Component.translatable("e33chat.accent." + (themeAccent != null ? themeAccent.key() : "blue")),
             btn -> {
                 ChatBubbleTheme.Accent cur = themeAccent != null ? themeAccent : ChatBubbleTheme.Accent.BLUE;
                 int next = (cur.ordinal() + 1) % values.length;
                 themeAccent = values[next];
-                btn.setMessage(Text.translatable("e33chat.accent." + themeAccent.key()));
+                btn.setMessage(Component.translatable("e33chat.accent." + themeAccent.key()));
             }
-        ).position(inputX, y).size(INPUT_W, 20).build();
+        ).pos(inputX, y).size(INPUT_W, 20).build();
     }
 
     // Animation style cycle buttons (SLIDE → FADE → ZOOM → NONE → ...)
-    private ButtonWidget mkStyleButton(int y, java.util.function.Supplier<String> getter, java.util.function.Consumer<String> setter) {
-        return ButtonWidget.builder(
-            Text.translatable("e33chat.config.anim_style." + getter.get()),
+    private Button mkStyleButton(int y, java.util.function.Supplier<String> getter, java.util.function.Consumer<String> setter) {
+        return Button.builder(
+            Component.translatable("e33chat.config.anim_style." + getter.get()),
             btn -> {
                 AnimationStyle[] values = AnimationStyle.values();
                 int next = (java.util.Arrays.asList(values).indexOf(AnimationStyle.valueOf(getter.get().toUpperCase())) + 1) % values.length;
                 setter.accept(values[next].name().toLowerCase());
-                btn.setMessage(Text.translatable("e33chat.config.anim_style." + getter.get()));
+                btn.setMessage(Component.translatable("e33chat.config.anim_style." + getter.get()));
             }
-        ).position(inputX, y).size(INPUT_W, 20).build();
+        ).pos(inputX, y).size(INPUT_W, 20).build();
     }
 
     // 色板点击写入 hex 字段（注册表行的 Ref 均为字符串）
@@ -796,29 +797,29 @@ public class ChatBubbleConfigScreen extends Screen {
         ((Ref<String>) ref).setter().accept(hex);
     }
 
-    private ButtonWidget mkBoolButton(int y, java.util.function.BooleanSupplier getter, java.util.function.Consumer<Boolean> setter) {
+    private Button mkBoolButton(int y, java.util.function.BooleanSupplier getter, java.util.function.Consumer<Boolean> setter) {
         boolean v = getter.getAsBoolean();
-        return ButtonWidget.builder(
-            v ? ScreenTexts.ON : ScreenTexts.OFF,
+        return Button.builder(
+            v ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF,
             btn -> {
                 boolean nv = !getter.getAsBoolean();
                 setter.accept(nv);
-                btn.setMessage(nv ? ScreenTexts.ON : ScreenTexts.OFF);
+                btn.setMessage(nv ? CommonComponents.OPTION_ON : CommonComponents.OPTION_OFF);
             }
-        ).position(inputX, y).size(INPUT_W, 20).build();
+        ).pos(inputX, y).size(INPUT_W, 20).build();
     }
 
-    private SliderWidget mkIntSlider(int y, java.util.function.IntSupplier getter, java.util.function.IntConsumer setter, int min, int max) {
+    private AbstractSliderButton mkIntSlider(int y, java.util.function.IntSupplier getter, java.util.function.IntConsumer setter, int min, int max) {
         return new IntSlider(inputX, y, INPUT_W, 20, getter, setter, min, max);
     }
 
-    private static class IntSlider extends SliderWidget {
+    private static class IntSlider extends AbstractSliderButton {
         private final java.util.function.IntSupplier getter;
         private final java.util.function.IntConsumer setter;
         private final int min, max;
 
         IntSlider(int x, int y, int w, int h, java.util.function.IntSupplier getter, java.util.function.IntConsumer setter, int min, int max) {
-            super(x, y, w, h, Text.literal(String.valueOf(getter.getAsInt())),
+            super(x, y, w, h, Component.literal(String.valueOf(getter.getAsInt())),
                 (getter.getAsInt() - min) / (double) (max - min));
             this.getter = getter;
             this.setter = setter;
@@ -833,27 +834,27 @@ public class ChatBubbleConfigScreen extends Screen {
 
         @Override
         protected void updateMessage() {
-            setMessage(Text.literal(String.valueOf(getter.getAsInt())));
+            setMessage(Component.literal(String.valueOf(getter.getAsInt())));
         }
     }
 
     private static final int[] TIME_SEP_PRESETS = {1, 5, 10, 15, 30, 0};
 
-    private ButtonWidget mkTimeSepButton(int y) {
+    private Button mkTimeSepButton(int y) {
         int cur = timeSeparatorMinutes;
-        String label = cur == 0 ? Text.translatable("e33chat.config.time_separator.disable").getString()
-            : cur + " " + Text.translatable("e33chat.config.time_separator.minute").getString();
-        return ButtonWidget.builder(Text.literal(label), btn -> {
+        String label = cur == 0 ? Component.translatable("e33chat.config.time_separator.disable").getString()
+            : cur + " " + Component.translatable("e33chat.config.time_separator.minute").getString();
+        return Button.builder(Component.literal(label), btn -> {
             int idx = -1;
             for (int i = 0; i < TIME_SEP_PRESETS.length; i++) {
                 if (TIME_SEP_PRESETS[i] == timeSeparatorMinutes) { idx = i; break; }
             }
             int next = TIME_SEP_PRESETS[(idx + 1) % TIME_SEP_PRESETS.length];
             timeSeparatorMinutes = next;
-            String nl = next == 0 ? Text.translatable("e33chat.config.time_separator.disable").getString()
-                : next + " " + Text.translatable("e33chat.config.time_separator.minute").getString();
-            btn.setMessage(Text.literal(nl));
-        }).position(inputX, y).size(INPUT_W, 20).build();
+            String nl = next == 0 ? Component.translatable("e33chat.config.time_separator.disable").getString()
+                : next + " " + Component.translatable("e33chat.config.time_separator.minute").getString();
+            btn.setMessage(Component.literal(nl));
+        }).pos(inputX, y).size(INPUT_W, 20).build();
     }
 
     /**
@@ -863,26 +864,26 @@ public class ChatBubbleConfigScreen extends Screen {
      * 本地副本：否则在本屏点「完成」时 {@code saveAll()} 会拿打开时的旧值把新设置覆盖掉。
      * 总开关（{@code channelDietEnabled}）只在**本屏**这一行，二级界面里没有模式按钮。
      */
-    private ButtonWidget mkChannelDietButton(int y) {
-        return ButtonWidget.builder(
-            Text.translatable("e33chat.config.channel_diet_open"),
+    private Button mkChannelDietButton(int y) {
+        return Button.builder(
+            Component.translatable("e33chat.config.channel_diet_open"),
             btn -> {
-                if (client == null) return;
-                client.setScreen(new ChannelDietScreen(this,
+                if (minecraft == null) return;
+                minecraft.gui.setScreen(new ChannelDietScreen(this,
                     disabled -> channelDietDisabledNamespaces = new ArrayList<>(disabled),
                     limit -> channelDietLimit = limit));
             }
-        ).position(inputX, y).size(INPUT_W, 20).build();
+        ).pos(inputX, y).size(INPUT_W, 20).build();
     }
 
-    private TextFieldWidget mkHexBox(int y, String initial, java.util.function.Consumer<String> onChange) {
-        TextFieldWidget box = new TextFieldWidget(textRenderer, inputX, y, INPUT_W, 20, Text.literal(""));
-        box.setText(initial);
+    private EditBox mkHexBox(int y, String initial, java.util.function.Consumer<String> onChange) {
+        EditBox box = new EditBox(font, inputX, y, INPUT_W, 20, Component.literal(""));
+        box.setValue(initial);
         box.setMaxLength(7);
-        box.setChangedListener(s -> {
+        box.setResponder(s -> {
             if (!s.matches("#?[0-9a-fA-F]{0,6}")) return;
             if (s.length() == 6 && !s.startsWith("#")) {
-                box.setText("#" + s);
+                box.setValue("#" + s);
                 onChange.accept("#" + s);
             } else if (s.length() == 7) {
                 onChange.accept(s);
@@ -891,11 +892,11 @@ public class ChatBubbleConfigScreen extends Screen {
         return box;
     }
 
-    private TextFieldWidget mkIntBox(int y, String initial, int min, int max, int maxLen, java.util.function.IntConsumer onChange) {
-        TextFieldWidget box = new TextFieldWidget(textRenderer, inputX, y, INPUT_W, 20, Text.literal(""));
-        box.setText(initial);
+    private EditBox mkIntBox(int y, String initial, int min, int max, int maxLen, java.util.function.IntConsumer onChange) {
+        EditBox box = new EditBox(font, inputX, y, INPUT_W, 20, Component.literal(""));
+        box.setValue(initial);
         box.setMaxLength(maxLen);
-        box.setChangedListener(s -> {
+        box.setResponder(s -> {
             if (!s.matches("\\d*")) return;
             try {
                 int v = Integer.parseInt(s);
@@ -905,11 +906,11 @@ public class ChatBubbleConfigScreen extends Screen {
         return box;
     }
 
-    private TextFieldWidget mkPatternBox(int y, List<String> initial, java.util.function.Consumer<List<String>> onChange) {
-        TextFieldWidget box = new TextFieldWidget(textRenderer, inputX, y, INPUT_W, 20, Text.literal(""));
-        box.setText(String.join(", ", initial));
+    private EditBox mkPatternBox(int y, List<String> initial, java.util.function.Consumer<List<String>> onChange) {
+        EditBox box = new EditBox(font, inputX, y, INPUT_W, 20, Component.literal(""));
+        box.setValue(String.join(", ", initial));
         box.setMaxLength(200);
-        box.setChangedListener(s -> {
+        box.setResponder(s -> {
             List<String> parts = new ArrayList<>();
             for (String part : s.split(",")) {
                 String trimmed = part.trim();
@@ -923,14 +924,15 @@ public class ChatBubbleConfigScreen extends Screen {
     // ---- rendering ----
 
     @Override
-    public void render(DrawContext g, int mouseX, int mouseY, float partialTick) {
+    public void extractRenderState(GuiGraphicsExtractor raw, int mouseX, int mouseY, float partialTick) {
+        UiCanvas g = UiCanvas.of(raw);
         // CONFIG_BG 烘焙为 75% 不透明（0xC0 alpha），drawTexture 无 alpha 顶点会丢 alpha 画成
         // 不透明灰块——走带 alpha 顶点的绘制恢复半透明，世界能透出来
         com.niuqu.chatbubble.texture.ColoredTextureRenderer.drawWithAlpha(g,
             com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.CONFIG_BG, texTheme()),
             0, 0, width, height, 0xC0 / 255f);
         tickAnims();
-        g.drawText(textRenderer, title, width / 2 - textRenderer.getWidth(title) / 2, 14, c().configTitle(), false);
+        g.drawText(font, title, width / 2 - font.width(title) / 2, 14, c().configTitle(), false);
 
         String tooltipKey = null;
 
@@ -941,12 +943,12 @@ public class ChatBubbleConfigScreen extends Screen {
             boolean sel = i == selectedCat;
             boolean hover = mouseX >= CAT_X && mouseX <= CAT_X + CAT_W && mouseY >= ly && mouseY < ly + CAT_ROW_H;
             if (sel || hover)
-                g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG, texTheme()), CAT_X, ly, 0f, 0f, CAT_W, CAT_ROW_H, 16, 16, 16, 16);
+                g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG, texTheme()), CAT_X, ly, 0f, 0f, CAT_W, CAT_ROW_H, 16, 16, 16, 16);
             if (sel)
                 g.fill(CAT_X, ly, CAT_X + 2, ly + CAT_ROW_H, c().configTitle());
             drawTriangle(g, CAT_X + 6, ly + (CAT_ROW_H - 5) / 2, expanded[i],
                 sel ? c().configTitle() : c().configLabel());
-            g.drawText(textRenderer, Text.translatable(cats.get(i).key()), CAT_X + 18, ly + (CAT_ROW_H - 8) / 2,
+            g.drawText(font, Component.translatable(cats.get(i).key()), CAT_X + 18, ly + (CAT_ROW_H - 8) / 2,
                 sel ? c().configTitle() : c().configLabel(), false);
             ly += CAT_ROW_H;
             if (expanded[i]) {
@@ -956,10 +958,10 @@ public class ChatBubbleConfigScreen extends Screen {
                     boolean selSub = i == selectedCat && sub == selectedSub;
                     boolean sh = mouseX >= CAT_X + 14 && mouseX <= CAT_X + CAT_W && mouseY >= ly && mouseY < ly + SUB_ROW_H;
                     if (selSub || sh)
-                        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG, texTheme()), CAT_X + 14, ly, 0f, 0f, CAT_W - 14, SUB_ROW_H, 16, 16, 16, 16);
+                        g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.HOVER_BG, texTheme()), CAT_X + 14, ly, 0f, 0f, CAT_W - 14, SUB_ROW_H, 16, 16, 16, 16);
                     if (selSub)
                         g.fill(CAT_X + 14, ly, CAT_X + 16, ly + SUB_ROW_H, c().configTitle());
-                    g.drawText(textRenderer, Text.translatable(o.key()), CAT_X + 24, ly + (SUB_ROW_H - 8) / 2,
+                    g.drawText(font, Component.translatable(o.key()), CAT_X + 24, ly + (SUB_ROW_H - 8) / 2,
                         (selSub || sh) ? c().configTitle() : c().configLabel(), false);
                     sub++;
                     ly += SUB_ROW_H;
@@ -969,7 +971,7 @@ public class ChatBubbleConfigScreen extends Screen {
         g.disableScissor();
         drawBar(g, tTrackX(), START_Y, viewBottom(), tTotalH(), treePane.offset(), calcTreeMaxScroll(), mouseX, mouseY, treePane.dragging());
 
-        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.DIVIDER, texTheme()), dividerX, START_Y - 6, 0f, 0f, 1, viewBottom() - (START_Y - 6), 16, 16, 16, 16);
+        g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.DIVIDER, texTheme()), dividerX, START_Y - 6, 0f, 0f, 1, viewBottom() - (START_Y - 6), 16, 16, 16, 16);
 
         if (showPreview()) drawBubblePreview(g);
 
@@ -977,16 +979,16 @@ public class ChatBubbleConfigScreen extends Screen {
         int y = viewTop() - rightPane.offset();
         for (Opt opt : visibleOpts()) {
             if (opt.isHeader()) {
-                Text label = Text.translatable(opt.key());
-                g.drawText(textRenderer, label, optLabelX, y + 11, c().configLabel(), false);
-                int lineX = optLabelX + textRenderer.getWidth(label) + 8;
+                Component label = Component.translatable(opt.key());
+                g.drawText(font, label, optLabelX, y + 11, c().configLabel(), false);
+                int lineX = optLabelX + font.width(label) + 8;
                 int lineEnd = optLabelX + optAreaW() + 4;
                 if (lineX < lineEnd)
-            g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.DIVIDER, texTheme()), lineX, y + 15, 0f, 0f, lineEnd - lineX, 1, 16, 16, 16, 16);
+            g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.DIVIDER, texTheme()), lineX, y + 15, 0f, 0f, lineEnd - lineX, 1, 16, 16, 16, 16);
                 y += HEADER_H;
                 continue;
             }
-            g.drawText(textRenderer, Text.translatable(opt.key()), optLabelX, y + 6, c().configLabel(), false);
+            g.drawText(font, Component.translatable(opt.key()), optLabelX, y + 6, c().configLabel(), false);
             if (opt.previewColor() != null) {
                 drawPreview(g, y + 3, opt.previewColor().get());
                 int px = paletteX();
@@ -1009,47 +1011,47 @@ public class ChatBubbleConfigScreen extends Screen {
         exitBtn.visible = changed > 0;
         saveBtn.visible = changed > 0;
 
-        super.render(g, mouseX, mouseY, partialTick);
+        super.extractRenderState(raw, mouseX, mouseY, partialTick);
 
         if (changed > 0)
-            g.drawText(textRenderer, Text.translatable("e33chat.config.changed", changed),
+            g.drawText(font, Component.translatable("e33chat.config.changed", changed),
                 width / 2 + 112, height - 26, c().configLabel(), false);
 
         if (tooltipKey != null)
             // wrap to 190px like Forge/Neo's font.split — the single-Text overload
             // renders one unwrapped line and long descriptions overflow the screen
             g.drawTooltip(
-                textRenderer.wrapLines(Text.translatable(tooltipKey), 190),
+                font.split(Component.translatable(tooltipKey), 190),
                 mouseX, mouseY);
     }
 
-    private void drawBubblePreview(DrawContext g) {
+    private void drawBubblePreview(UiCanvas g) {
         int top = START_Y;
         int other = ChatBubbleConfig.parseHexColor(otherBubbleColor, 0xFF4A4A4A);
         int own = ChatBubbleConfig.parseHexColor(ownBubbleColor, ACCENT);
         int otherT = ChatBubbleConfig.parseHexColor(otherTextColor, 0xFFFFFFFF);
         int ownT = ChatBubbleConfig.parseHexColor(ownTextColor, 0xFFFFFFFF);
         float rad = bubbleCornerRadius;
-        Text otherMsg = Text.translatable("e33chat.config.preview.sample_other");
-        Text ownMsg = Text.translatable("e33chat.config.preview.sample_own");
+        Component otherMsg = Component.translatable("e33chat.config.preview.sample_other");
+        Component ownMsg = Component.translatable("e33chat.config.preview.sample_own");
         int maxW = (optAreaW() - 8) / 2;
-        int ow = Math.min(textRenderer.getWidth(otherMsg) + 8, maxW);
+        int ow = Math.min(font.width(otherMsg) + 8, maxW);
         RoundRectRenderer.fill(g, optLabelX, top + 4, optLabelX + ow, top + 18, rad, other);
-        g.drawText(textRenderer, otherMsg, optLabelX + 4, top + 7, otherT, false);
-        int mw = Math.min(textRenderer.getWidth(ownMsg) + 8, maxW);
+        g.drawText(font, otherMsg, optLabelX + 4, top + 7, otherT, false);
+        int mw = Math.min(font.width(ownMsg) + 8, maxW);
         int mx = optLabelX + optAreaW() - mw;
         RoundRectRenderer.fill(g, mx, top + 22, mx + mw, top + 36, rad, own);
-        g.drawText(textRenderer, ownMsg, mx + 4, top + 25, ownT, false);
-        g.drawTexture(net.minecraft.client.gl.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.DIVIDER, texTheme()), optLabelX - 4, top + PREVIEW_H - 1, 0f, 0f, optAreaW() + 8, 1, 16, 16, 16, 16);
+        g.drawText(font, ownMsg, mx + 4, top + 25, ownT, false);
+        g.drawTexture(net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED, com.niuqu.chatbubble.texture.UiTextureManager.rl(com.niuqu.chatbubble.texture.UiElement.DIVIDER, texTheme()), optLabelX - 4, top + PREVIEW_H - 1, 0f, 0f, optAreaW() + 8, 1, 16, 16, 16, 16);
     }
 
-    private void drawPreview(DrawContext g, int y, String hex) {
+    private void drawPreview(UiCanvas g, int y, String hex) {
         int color = ChatBubbleConfig.parseHexColor(hex, 0xFF000000);
         g.fill(previewX, y, previewX + 14, y + 14, c().iconHover());
         g.fill(previewX + 1, y + 1, previewX + 13, y + 13, color);
     }
 
-    private void drawTriangle(DrawContext g, int x, int y, boolean down, int color) {
+    private void drawTriangle(UiCanvas g, int x, int y, boolean down, int color) {
         if (down) {
             g.fill(x, y, x + 5, y + 1, color);
             g.fill(x + 1, y + 1, x + 4, y + 2, color);
@@ -1064,17 +1066,19 @@ public class ChatBubbleConfigScreen extends Screen {
     }
 
     @Override
-    public void renderBackground(DrawContext g, int mouseX, int mouseY, float partialTick) {
+    public void extractBackground(GuiGraphicsExtractor raw, int mouseX, int mouseY, float partialTick) {
         // no-op：背景已在 render() 开头画，避免 1.21.1 batch 缓冲叠暗文字
     }
 
     // ---- input ----
 
     @Override
-    public boolean mouseClicked(Click click, boolean doubleClick) {
+    public boolean mouseClicked(MouseButtonEvent click, boolean doubleClick) {
         double mouseX = click.x();
         double mouseY = click.y();
-        int button = click.button();
+        // 26.3 键号是 SDL 编号（1=左/2=中/3=右），本类命中判定按旧编号（0=左/1=右）书写。
+        // click 本体仍按原样传给 super（原版控件要的是 1=左）。
+        int button = MouseButtons.legacy(click.button());
         int w = SCROLLBAR_W;
         int rMax = calcMaxScroll();
         if (rMax > 0 && mouseX >= rTrackX() && mouseX < rTrackX() + w
@@ -1129,12 +1133,12 @@ public class ChatBubbleConfigScreen extends Screen {
                 for (Opt opt : visibleOpts()) {
                     if (opt.isHeader()) { y += HEADER_H; continue; }
                     if (opt.previewColor() != null && mouseY >= y + 12 && mouseY < y + 20) {
-                        int idx = MathHelper.clamp((int) (mouseX - px) / 10, 0, PALETTE.length - 1);
+                        int idx = Mth.clamp((int) (mouseX - px) / 10, 0, PALETTE.length - 1);
                         String hex = PALETTE[idx];
                         if (opt.value() instanceof Ref<?> ref && ref.getter().get() instanceof String)
                             setHexValue(ref, hex);
-                        if (wi < scrollWidgets.size() && scrollWidgets.get(wi) instanceof TextFieldWidget eb)
-                            eb.setText(hex);
+                        if (wi < scrollWidgets.size() && scrollWidgets.get(wi) instanceof EditBox eb)
+                            eb.setValue(hex);
                         return true;
                     }
                     wi++;
@@ -1158,7 +1162,7 @@ public class ChatBubbleConfigScreen extends Screen {
     }
 
     @Override
-    public boolean mouseDragged(Click click, double dx, double dy) {
+    public boolean mouseDragged(MouseButtonEvent click, double dx, double dy) {
         double mouseY = click.y();
         if (rightPane.dragging()) {
             rightPane.dragTo((int) mouseY, rTrackH(), rTotalH(), calcMaxScroll(), 80);
@@ -1172,7 +1176,7 @@ public class ChatBubbleConfigScreen extends Screen {
     }
 
     @Override
-    public boolean mouseReleased(Click click) {
+    public boolean mouseReleased(MouseButtonEvent click) {
         rightPane.dragEnd();
         treePane.dragEnd();
         return super.mouseReleased(click);
@@ -1181,24 +1185,24 @@ public class ChatBubbleConfigScreen extends Screen {
     private void doClose() {
         saveAll();
         // 纹理走 drawTexture(Identifier) 懒加载，配置改动无需重新烘焙
-        client.setScreen(lastScreen);
+        minecraft.gui.setScreen(lastScreen);
     }
 
     private void doExit() {
         revertAll();
-        client.setScreen(lastScreen);
+        minecraft.gui.setScreen(lastScreen);
     }
 
     @Override
-    public void close() {
+    public void onClose() {
         int changed = changeCount();
         if (changed > 0) {
-            client.setScreen(new ConfirmScreen((BooleanConsumer) confirmed -> {
+            minecraft.gui.setScreen(new ConfirmScreen((BooleanConsumer) confirmed -> {
                 if (confirmed) doExit();
-                else client.setScreen(this);
+                else minecraft.gui.setScreen(this);
             },
-                Text.translatable("e33chat.config.discard.title"),
-                Text.translatable("e33chat.config.discard.message", changed)));
+                Component.translatable("e33chat.config.discard.title"),
+                Component.translatable("e33chat.config.discard.message", changed)));
         } else {
             doClose();
         }

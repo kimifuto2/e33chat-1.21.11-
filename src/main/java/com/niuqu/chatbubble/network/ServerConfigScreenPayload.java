@@ -1,9 +1,9 @@
 package com.niuqu.chatbubble.network;
 
-import net.minecraft.network.PacketByteBuf;
-import net.minecraft.network.codec.PacketCodec;
-import net.minecraft.network.packet.CustomPayload;
-import net.minecraft.util.Identifier;
+import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.codec.StreamCodec;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -17,12 +17,12 @@ import java.util.List;
 public record ServerConfigScreenPayload(boolean useTpa, boolean historyEnabled, boolean templateDebug,
                                         boolean mediaEnabled, boolean mediaAutoClean,
                                         List<String> chatTemplates, List<String> whisperTemplates)
-        implements CustomPayload {
+        implements CustomPacketPayload {
 
-    public static final CustomPayload.Id<ServerConfigScreenPayload> ID =
-        new CustomPayload.Id<>(Identifier.of("e33chat", "server_config_screen"));
+    public static final CustomPacketPayload.Type<ServerConfigScreenPayload> ID =
+        new CustomPacketPayload.Type<>(Identifier.fromNamespaceAndPath("e33chat", "server_config_screen"));
 
-    public static final PacketCodec<PacketByteBuf, ServerConfigScreenPayload> CODEC = PacketCodec.of(
+    public static final StreamCodec<FriendlyByteBuf, ServerConfigScreenPayload> CODEC = StreamCodec.ofMember(
         (value, buf) -> ServerConfigDto.encode(new ServerConfigDto(
             value.useTpa, value.historyEnabled, value.templateDebug, value.mediaEnabled,
             value.mediaAutoClean, value.chatTemplates, value.whisperTemplates), buf),
@@ -34,5 +34,5 @@ public record ServerConfigScreenPayload(boolean useTpa, boolean historyEnabled, 
     );
 
     @Override
-    public Id<ServerConfigScreenPayload> getId() { return ID; }
+    public Type<ServerConfigScreenPayload> type() { return ID; }
 }

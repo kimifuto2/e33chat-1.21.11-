@@ -3,8 +3,8 @@ package com.niuqu.chatbubble.chat.capture;
 import com.niuqu.chatbubble.chat.MessagePresentation;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import java.util.UUID;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.text.Text;
+import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
 
 /**
  * Layer 2: structural tell-click attribution. Plugins attach "click to
@@ -17,10 +17,10 @@ import net.minecraft.text.Text;
 public final class TellClickDetector {
     private TellClickDetector() {}
 
-    public static ChatMessageStore.SenderMeta detectByTellClick(Text message, String text) {
+    public static ChatMessageStore.SenderMeta detectByTellClick(Component message, String text) {
         if (ChatClassifier.isVanillaBroadcast(message)) return null;
-        var player = MinecraftClient.getInstance().player;
-        if (player == null || player.networkHandler == null) return null;
+        var player = Minecraft.getInstance().player;
+        if (player == null || player.connection == null) return null;
         final int[] pos = {0};
         final int[] range = {-1, -1};
         final String[] tellName = {null};
@@ -29,7 +29,7 @@ public final class TellClickDetector {
             int s = pos[0], e = s + str.length();
             pos[0] = e;
             var click = style.getClickEvent();
-            if (tellName[0] == null && click instanceof net.minecraft.text.ClickEvent.SuggestCommand sc
+            if (tellName[0] == null && click instanceof net.minecraft.network.chat.ClickEvent.SuggestCommand sc
                 && sc.command() != null) {
                 String cmd = sc.command();
                 for (String p : new String[]{"/tell ", "/msg ", "/w ", "/whisper "}) {
@@ -48,12 +48,12 @@ public final class TellClickDetector {
                 }
             }
             return java.util.Optional.<Object>empty();
-        }, net.minecraft.text.Style.EMPTY);
+        }, net.minecraft.network.chat.Style.EMPTY);
         int nameRangeLimit = Math.max(32, text.length() / 3);
         if (tellName[0] == null || range[0] > nameRangeLimit) return null;
 
-        net.minecraft.client.network.PlayerListEntry sender = null;
-        for (var info : player.networkHandler.getPlayerList()) {
+        net.minecraft.client.multiplayer.PlayerInfo sender = null;
+        for (var info : player.connection.getOnlinePlayers()) {
             String profile = info.getProfile().name();
             if (profile.equals(tellName[0]) || profile.replaceAll("§.", "").equals(tellName[0])) {
                 sender = info;
@@ -84,8 +84,8 @@ public final class TellClickDetector {
 
         String profile = sender != null ? sender.getProfile().name() : tellName[0];
         UUID id = sender != null ? sender.getProfile().id() : cachedId;
-        Text displayName = ChatPipeline.cleanNameArea(message, 0, b, tellName[0], Text.literal(profile));
-        Text content = ChatMessageStore.sliceStyled(message, contentStart, text.length());
+        Component displayName = ChatPipeline.cleanNameArea(message, 0, b, tellName[0], Component.literal(profile));
+        Component content = ChatMessageStore.sliceStyled(message, contentStart, text.length());
         ChatMessageStore.debugLog(() -> "[e33chat] System(tell click) | text='" + text + "' | name=" + profile + " | display='" + displayName.getString() + "' | content='" + content.getString() + "'");
         return new ChatMessageStore.SenderMeta(
             id,

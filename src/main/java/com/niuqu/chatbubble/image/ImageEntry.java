@@ -1,7 +1,7 @@
 package com.niuqu.chatbubble.image;
 
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.util.Identifier;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.resources.Identifier;
 
 /**
  * Loading state of one image URL. Texture upload happens on the render

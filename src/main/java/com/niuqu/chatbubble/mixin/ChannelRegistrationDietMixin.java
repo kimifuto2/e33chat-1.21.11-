@@ -7,9 +7,9 @@ import com.niuqu.chatbubble.config.ChatBubbleConfig;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import net.fabricmc.fabric.impl.networking.AbstractChanneledNetworkAddon;
 import net.fabricmc.fabric.impl.networking.client.ClientPlayNetworkAddon;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.ClientPlayNetworkHandler;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.resources.Identifier;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.ModifyArg;
@@ -91,12 +91,12 @@ public abstract class ChannelRegistrationDietMixin {
         int limit = cfg.channelDietLimitResolved();
         List<String> disabled = cfg.channelDietDisabledResolved();
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        boolean integrated = client != null && client.getServer() != null;
+        Minecraft client = Minecraft.getInstance();
+        boolean integrated = client != null && client.getSingleplayerServer() != null;
         String brand = null;
         if (client != null) {
-            ClientPlayNetworkHandler handler = client.getNetworkHandler();
-            brand = handler != null ? handler.getBrand() : null;
+            ClientPacketListener handler = client.getConnection();
+            brand = handler != null ? handler.serverBrand() : null;
         }
 
         // 1) 统计（开关关闭也记录：GUI 在只统计模式下同样需要看到真实数字）

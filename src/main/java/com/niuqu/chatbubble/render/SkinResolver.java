@@ -8,11 +8,11 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
-import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.network.PlayerListEntry;
-import net.minecraft.client.util.DefaultSkinHelper;
-import net.minecraft.entity.player.SkinTextures;
-import net.minecraft.util.Identifier;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.PlayerInfo;
+import net.minecraft.client.resources.DefaultPlayerSkin;
+import net.minecraft.world.entity.player.PlayerSkin;
+import net.minecraft.resources.Identifier;
 
 /**
  * Player-head skin resolution with a merged UUID + name cache.
@@ -93,15 +93,15 @@ public final class SkinResolver {
      * default head while the real texture is fetched in the background.
      */
     public static Identifier getSkin(UUID uuid, String name) {
-        MinecraftClient client = MinecraftClient.getInstance();
+        Minecraft client = Minecraft.getInstance();
         // Online players: read PlayerListEntry fresh every frame — caching the first
         // result (default Steve/Alex while the async download is in progress) would
         // freeze the head forever even after the real skin loaded. CSL intercepts the
         // underlying lookup. This path never touches the network.
-        if (client.getNetworkHandler() != null && uuid != null && !uuid.equals(NIL_UUID)) {
-            PlayerListEntry info = client.getNetworkHandler().getPlayerListEntry(uuid);
+        if (client.getConnection() != null && uuid != null && !uuid.equals(NIL_UUID)) {
+            PlayerInfo info = client.getConnection().getPlayerInfo(uuid);
             if (info != null) {
-                Identifier tex = info.getSkinTextures().body().texturePath();
+                Identifier tex = info.getSkin().body().texturePath();
                 rememberSkin(uuid, name, tex);
                 return tex;
             }
@@ -117,7 +117,7 @@ public final class SkinResolver {
         }
         // Miss: hand back the default head now, resolve in the background.
         requestSkin(uuid, name);
-        return DefaultSkinHelper.getTexture();
+        return DefaultPlayerSkin.getDefaultTexture();
     }
 
     /** Fire-and-forget lookup; never blocks and never throws at the caller. */
@@ -131,7 +131,7 @@ public final class SkinResolver {
             pending.remove(key);
             return;
         }
-        MinecraftClient client = MinecraftClient.getInstance();
+        Minecraft client = Minecraft.getInstance();
         try {
             final UUID profileId = id;
             final String profileName = name;
@@ -139,7 +139,7 @@ public final class SkinResolver {
             // performs the (blocking) session-server lookup. Run the whole thing on a
             // worker thread so rendering never waits on it.
             CompletableFuture.supplyAsync(() -> {
-                var supplier = client.getSkinProvider().supplySkinTextures(
+                var supplier = client.getSkinManager().createLookup(
                     new GameProfile(profileId, profileName), false);
                 return supplier == null ? null : supplier.get();
             }, SKIN_EXEC).whenComplete((skin, error) -> {
