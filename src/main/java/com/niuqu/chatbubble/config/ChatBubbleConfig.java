@@ -84,7 +84,13 @@ public record ChatBubbleConfig(
     // 公屏/系统免打扰仍然用上面的 dndEnabled（语义 = 「公屏免打扰」）。
     // 旧配置文件没有这个键时 Gson 读成 null → 由 ConfigManager.mergeWithDefaults 收敛成空表；
     // 空表 = 没有任何私聊被免打扰（与旧版全局 DND 的默认行为一致）。
-    List<String> dndWhisperPlayers
+    List<String> dndWhisperPlayers,
+    // 通道节食（实验性）：在**非 Fabric 服务器**（Paper/原版等）上把 PLAY 阶段随
+    // minecraft:register 发出的自定义通道声明压到最少，规避 Paper 的「通道数量上限」踢人。
+    // 同样用可空 Boolean 区分「旧配置文件没有这个键」（null → 默认 false，关闭）与
+    // 「用户显式关闭」。关闭时行为与旧版完全一致；收敛在 ConfigManager.mergeWithDefaults，
+    // 运行期由 ChannelRegistrationDietMixin 读取。
+    Boolean channelDietEnabled
 ) {
     /** 公屏小窗静默秒数（后续在 {@link #publicOverlayIdleSeconds()}）的默认值与合法范围：
      *  配置屏的输入框范围、旧配置缺键的回落值、运行时的夹取都用这三个常量，避免三处漂移。 */
@@ -112,7 +118,9 @@ public record ChatBubbleConfig(
             // 公屏小窗静默 5 秒后淡出
             PUBLIC_OVERLAY_IDLE_DEFAULT_SECONDS,
             // 私聊免打扰名单默认空（每个私聊各自开关，默认都不免打扰）
-            List.of()
+            List.of(),
+            // 通道节食默认关闭（关闭 = 行为与旧版完全一致）
+            false
         );
     }
 
@@ -138,7 +146,8 @@ public record ChatBubbleConfig(
             panelAnimStyle, bannerAnimStyle, popupAnimStyle, messageAnimStyle, imageRenderEnabled, receiveImages,
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
-            dndWhisperPlayers);
+            dndWhisperPlayers,
+            channelDietEnabled);
     }
 
     public ChatBubbleConfig withQuickChatPhrases(List<String> phrases) {
@@ -152,7 +161,8 @@ public record ChatBubbleConfig(
             panelAnimStyle, bannerAnimStyle, popupAnimStyle, messageAnimStyle, imageRenderEnabled, receiveImages,
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
-            dndWhisperPlayers);
+            dndWhisperPlayers,
+            channelDietEnabled);
     }
 
     public ChatBubbleConfig withSidebarHidePatterns(List<String> patterns) {
@@ -166,7 +176,8 @@ public record ChatBubbleConfig(
             panelAnimStyle, bannerAnimStyle, popupAnimStyle, messageAnimStyle, imageRenderEnabled, receiveImages,
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
-            dndWhisperPlayers);
+            dndWhisperPlayers,
+            channelDietEnabled);
     }
 
     public ChatBubbleConfig withBlockedPlayers(List<String> blocked) {
@@ -180,7 +191,8 @@ public record ChatBubbleConfig(
             panelAnimStyle, bannerAnimStyle, popupAnimStyle, messageAnimStyle, imageRenderEnabled, receiveImages,
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
-            dndWhisperPlayers);
+            dndWhisperPlayers,
+            channelDietEnabled);
     }
 
     public ChatBubbleConfig withThemeValues(String theme, String themeAccent, Map<String, String> themeCustom) {
@@ -194,7 +206,8 @@ public record ChatBubbleConfig(
             panelAnimStyle, bannerAnimStyle, popupAnimStyle, messageAnimStyle, imageRenderEnabled, receiveImages,
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
-            dndWhisperPlayers);
+            dndWhisperPlayers,
+            channelDietEnabled);
     }
 
     /** 免打扰开关（标题栏月亮按钮写入，重启后保留）。
@@ -211,7 +224,8 @@ public record ChatBubbleConfig(
             this.panelAnimStyle(), this.bannerAnimStyle(), this.popupAnimStyle(), this.messageAnimStyle(), this.imageRenderEnabled(), this.receiveImages(),
             this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), enabled, this.publicOverlayEnabled(),
             this.publicOverlayIdleSeconds(),
-            this.dndWhisperPlayers());
+            this.dndWhisperPlayers(),
+            this.channelDietEnabled());
     }
 
     /** 私聊免打扰名单整体替换（null → 空表）。名单里存玩家名，逐个私聊独立生效。 */
@@ -226,7 +240,25 @@ public record ChatBubbleConfig(
             this.panelAnimStyle(), this.bannerAnimStyle(), this.popupAnimStyle(), this.messageAnimStyle(), this.imageRenderEnabled(), this.receiveImages(),
             this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), this.dndEnabled(), this.publicOverlayEnabled(),
             this.publicOverlayIdleSeconds(),
-            normalizeWhisperDnd(players));
+            normalizeWhisperDnd(players),
+            this.channelDietEnabled());
+    }
+
+    /** 通道节食开关（实验性，默认关闭）。关闭时 PLAY 阶段的通道声明与旧版完全一致。
+     *  即使置 true，也只在「服务端 brand 已知且不含 fabric」时才真正节食。 */
+    public ChatBubbleConfig withChannelDietEnabled(boolean enabled) {
+        return new ChatBubbleConfig(this.enabled(), this.theme(), this.themeAccent(), this.themeCustom(), this.redDotEnabled(), this.hideChatIcon(), this.animationEnabled(),
+            this.systemChatAsBubble(), this.antiSpam,
+            this.chatHistoryEnabled(), this.historyRetentionDays(), this.timeSeparatorMinutes(),
+            this.panelWidth(), this.bubbleCornerRadius(), this.ownBubbleColor(), this.otherBubbleColor(), this.ownTextColor(), this.otherTextColor(),
+            this.soundPublic(), this.soundSystem(), this.soundWhisper(), this.debugLog(), this.preserveInput(), this.colorCodes(), this.sidebarHidePatterns(), this.blockedPlayers(), this.quickChatPhrases(),
+            this.mentionBannerEnabled(), this.systemBannerEnabled(), this.mentionBannerDuration(), this.mentionSoundEnabled(), this.mentionRequireAt(), this.mentionWhisperBanner(),
+            this.blurEnabled(), this.panelOpacity(), this.soundVolume(), this.ownMentionNotify(), this.ownQuoteNotify(), this.ownWhisperNotify(), this.bannerCornerRadius(), this.bannerOffsetX(), this.bannerOffsetY(), this.bannerMaxStack(),
+            this.panelAnimStyle(), this.bannerAnimStyle(), this.popupAnimStyle(), this.messageAnimStyle(), this.imageRenderEnabled(), this.receiveImages(),
+            this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), this.dndEnabled(), this.publicOverlayEnabled(),
+            this.publicOverlayIdleSeconds(),
+            this.dndWhisperPlayers(),
+            enabled);
     }
 
     /** 开关「某个私聊对象」的免打扰（同名去重、大小写不敏感）。

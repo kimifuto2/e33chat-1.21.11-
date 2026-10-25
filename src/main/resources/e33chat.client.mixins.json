@@ -12,6 +12,7 @@
     "MinecraftClientMixin",
     "MouseHandlerAccessor",
     "SuggestionWindowAccessor",
-    "AwtHeadlessHackMixin"
+    "AwtHeadlessHackMixin",
+    "ChannelRegistrationDietMixin"
   ]
 }

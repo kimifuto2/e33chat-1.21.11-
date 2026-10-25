@@ -113,6 +113,8 @@ public class ChatBubbleConfigScreen extends Screen {
     private List<String> blockedPlayers;
     // 私聊免打扰名单（玩家名）：本屏没有对应控件，但 saveAll 要原样写回
     private List<String> dndWhisperPlayers = new ArrayList<>();
+    /** 通道节食（实验性，默认关闭）：非 Fabric 服务器上把 PLAY 阶段的自定义通道声明压到最少。 */
+    private boolean channelDietEnabled;
 
     // 打开时的快照——用于 changeCount / revertAll
     private ChatBubbleConfig snapshot;
@@ -229,7 +231,9 @@ public class ChatBubbleConfigScreen extends Screen {
             // 私聊免打扰名单不在本屏编辑（开关是聊天窗口标题栏那颗月亮按钮：
             // 在私聊视图下点它切换的就是当前对象的 DND），
             // 保存时必须原样带回，否则"改任何一个设置"都会把名单清空。
-            dndWhisperPlayers));
+            dndWhisperPlayers,
+            // 通道节食（实验性）：默认关闭；旧配置缺键时 loadFromConfig 已按 false 处理
+            channelDietEnabled));
     }
 
     private void loadFromConfig() {
@@ -280,6 +284,8 @@ public class ChatBubbleConfigScreen extends Screen {
         blockedPlayers = new ArrayList<>(cfg.blockedPlayers());
         // 旧配置文件没有这个键 → null，视为空名单
         dndWhisperPlayers = new ArrayList<>(cfg.dndWhisperPlayers() != null ? cfg.dndWhisperPlayers() : List.of());
+        // 可空：旧配置文件没有这个键 → 视为默认（关闭）
+        channelDietEnabled = cfg.channelDietEnabled() != null && cfg.channelDietEnabled();
         messageGap = cfg.messageGap() != null ? cfg.messageGap() : 6;
         avatarSize = cfg.avatarSize() != null ? cfg.avatarSize() : 20;
         bubbleSize = cfg.bubbleSize() != null ? cfg.bubbleSize() : 9;
@@ -529,6 +535,10 @@ public class ChatBubbleConfigScreen extends Screen {
             OptionDef.bool("e33chat.config.close_chat_on_send", Ref.b(() -> closeChatOnSend, v -> closeChatOnSend = v))),
         SectionDef.of("e33chat.config.section.upload",
             OptionDef.text("e33chat.config.upload_url", Ref.s(() -> uploadUrl, v -> uploadUrl = v))),
+        // 网络/服务端联动：通道节食（实验性）。只影响 PLAY 阶段发给服务端的自定义通道声明，
+        // 默认关闭；开启后仍只在「服务端 brand 已知且不含 fabric」时才真正节食。
+        SectionDef.of("e33chat.config.section.network",
+            OptionDef.bool("e33chat.config.channel_diet", Ref.b(() -> channelDietEnabled, v -> channelDietEnabled = v))),
         SectionDef.of("e33chat.config.section.debug",
             OptionDef.bool("e33chat.config.debug_log", Ref.b(() -> debugLog, v -> debugLog = v)),
             OptionDef.bool("e33chat.config.own_mention_notify", Ref.b(() -> ownMentionNotify, v -> ownMentionNotify = v)),

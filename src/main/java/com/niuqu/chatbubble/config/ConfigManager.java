@@ -96,7 +96,9 @@ public final class ConfigManager {
             // 公屏小窗静默秒数：旧文件缺键 → 回落默认 5 秒；手改成越界值也夹回 1~60
             clampIdleSeconds(c.publicOverlayIdleSeconds(), d.publicOverlayIdleSeconds()),
             // 私聊免打扰名单：旧配置文件没有这个键 → 读成 null，这里回落成空表（= 没有私聊被免打扰）
-            c.dndWhisperPlayers() != null ? c.dndWhisperPlayers() : d.dndWhisperPlayers());
+            c.dndWhisperPlayers() != null ? c.dndWhisperPlayers() : d.dndWhisperPlayers(),
+            // 通道节食：旧配置文件没有这个键 → null → 回落默认（关闭），显式 true 才开启
+            c.channelDietEnabled() != null ? c.channelDietEnabled() : d.channelDietEnabled());
     }
 
     /** 公屏小窗静默秒数夹到声明的 1~60 秒范围（null → 默认值）。 */
