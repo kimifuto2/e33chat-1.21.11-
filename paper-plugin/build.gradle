@@ -5,6 +5,15 @@ plugins {
 group = 'com.niuqu.chatbubble'
 version = '3.0.1'
 
+// ---- Paper 服务端版本（26.x 起换了版本体系） ----------------------------------------
+// 坐标不再是 "1.21.11-R0.1-SNAPSHOT"，而是 "<mc>.build.<build>-<channel>"，例如 26.2.build.135-stable。
+// 取值来源：https://repo.papermc.io/repository/maven-public/io/papermc/paper/paper-api/maven-metadata.xml
+// 里 26.2.* 的最后一个 *-stable（26.2.build.135-stable），与 fill.papermc.io 的 26.2 latest build = 135 一致。
+// （旧 api.papermc.io/v2 对 26.x 已返回 sunset，不能再用它查 build。）
+ext.paperApiVersion = '26.2.build.135-stable'
+// 只用于产物名与 paper-plugin.yml，让 26.3 / 26.2 两个 jar 一眼可分。
+ext.paperMcVersion = '26.2'
+
 repositories {
     // 本机能直连的 Central 镜像（本环境下 repo.maven.apache.org 走代理也慢，见 ../project/settings.gradle 的同类备注）
     maven { url = 'https://maven.aliyun.com/repository/central' }
@@ -15,26 +24,30 @@ repositories {
 
 dependencies {
     // 只编译期需要：运行时由 Paper 服务端提供（不要打进 jar）
-    compileOnly 'io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT'
+    compileOnly "io.papermc.paper:paper-api:${paperApiVersion}"
 }
 
+// paper-api 26.3 的 class 文件主版本是 69 = Java 25（javap 取证），所以这里必须用 release 25，
+// 而不是原来的 21；用 release 21 会在解析 paper-api 时直接 "class file has wrong version"。
 java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 tasks.withType(JavaCompile).configureEach {
-    options.release = 21
+    options.release = 25
     options.encoding = 'UTF-8'
 }
 
 tasks.jar {
     archiveBaseName = 'E33ChatPaper'
-    archiveVersion = project.version
+    // 产物名 = E33ChatPaper-<服务端版本>-<插件版本>.jar，例如 E33ChatPaper-26.3-3.0.1.jar
+    archiveVersion = "${paperMcVersion}-${project.version}"
     manifest {
         attributes(
             'Implementation-Title': 'E33ChatPaper',
-            'Implementation-Version': project.version
+            'Implementation-Version': project.version,
+            'Paper-Minecraft-Version': paperMcVersion
         )
     }
 }

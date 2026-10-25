@@ -1,7 +1,10 @@
 name: E33ChatPaper
 version: '3.0.1'
 main: com.niuqu.chatbubble.paper.E33ChatPaperPlugin
-api-version: '1.21'
+# Paper 26.x 的 api-version 写法：直接用 <major>.<minor>（这里是 26.2），不再写 '1.21'。
+# 依据：paper-api 26.2.build.135-stable 的 jar 根 apiVersioning.json = {"currentApiVersion":"26.2"}；
+# 且 Paper 官方文档（docs.papermc.io/paper/dev/plugin-yml）渲染出的示例就是 api-version: '26.3' 这种形态。
+api-version: '26.2'
 description: E33Chat server-side bridge for Paper - relays e33chat:quote_sync to e33chat:chat_meta so Fabric clients see quoted messages across players.
 authors:
   - niuqu
