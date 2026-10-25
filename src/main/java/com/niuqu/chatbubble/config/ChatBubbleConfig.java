@@ -1,6 +1,7 @@
 package com.niuqu.chatbubble.config;
 
 import com.google.gson.annotations.SerializedName;
+import com.niuqu.chatbubble.channeldiet.ChannelDietFilter;
 import java.util.List;
 import java.util.Map;
 
@@ -85,12 +86,26 @@ public record ChatBubbleConfig(
     // 旧配置文件没有这个键时 Gson 读成 null → 由 ConfigManager.mergeWithDefaults 收敛成空表；
     // 空表 = 没有任何私聊被免打扰（与旧版全局 DND 的默认行为一致）。
     List<String> dndWhisperPlayers,
-    // 通道节食（实验性）：在**非 Fabric 服务器**（Paper/原版等）上把 PLAY 阶段随
-    // minecraft:register 发出的自定义通道声明压到最少，规避 Paper 的「通道数量上限」踢人。
-    // 同样用可空 Boolean 区分「旧配置文件没有这个键」（null → 默认 false，关闭）与
-    // 「用户显式关闭」。关闭时行为与旧版完全一致；收敛在 ConfigManager.mergeWithDefaults，
-    // 运行期由 ChannelRegistrationDietMixin 读取。
-    Boolean channelDietEnabled
+    // 通道节食（实验性）的**唯一总开关**（3.0.3 起没有三态模式了）：
+    //   开 → 连接**非 Fabric 服务器**（Paper/原版等）时，按「通道节食设置」里关掉的模组
+    //        + 上限裁剪 PLAY 阶段随 minecraft:register 发出的自定义通道声明，规避 Paper
+    //        的「通道数量上限」踢人；
+    //   关 → 只统计不裁剪（GUI 仍能看到数量和改动效果，发送时原样放行）。
+    // 可空 Boolean 用来区分「旧配置文件没有这个键」（null → 默认 false，关闭）与
+    // 「用户显式关闭」。收敛在 ConfigManager.mergeWithDefaults，
+    // 运行期由 ChannelRegistrationDietMixin 唯一读取。
+    Boolean channelDietEnabled,
+    // 【遗留键，不参与任何逻辑】3.0.2 的三态模式（"off" / "countOnly" / "active"）。
+    // 3.0.3 起删掉了三态交互，但 JSON 键保留：老配置读进来不会报错、也不会被抹掉，
+    // 值原样透传（谁都不读它）。是否裁剪只看上面的 channelDietEnabled —— **不从旧值
+    // 推导开关**，避免把用户已经设好的开关意外改掉。
+    String channelDietMode,
+    // 允许声明的通道上限（默认 120，合法 32~127）。Paper 的判定是严格 < 128，即最多 127 条，
+    // 所以这里不提供 128 及以上的值；null → 默认 120，越界值由 mergeWithDefaults 夹回。
+    Integer channelDietLimit,
+    // GUI 里被勾掉（禁用）的命名空间：这些命名空间下的通道一条都不声明。
+    // 存小写命名空间；e33chat 不允许出现在这里（自己永远保留）。null → 空表。
+    List<String> channelDietDisabledNamespaces
 ) {
     /** 公屏小窗静默秒数（后续在 {@link #publicOverlayIdleSeconds()}）的默认值与合法范围：
      *  配置屏的输入框范围、旧配置缺键的回落值、运行时的夹取都用这三个常量，避免三处漂移。 */
@@ -119,8 +134,12 @@ public record ChatBubbleConfig(
             PUBLIC_OVERLAY_IDLE_DEFAULT_SECONDS,
             // 私聊免打扰名单默认空（每个私聊各自开关，默认都不免打扰）
             List.of(),
-            // 通道节食默认关闭（关闭 = 行为与旧版完全一致）
-            false
+            // 通道节食默认关闭（关闭 = 只统计不裁剪，行为与旧版一致）
+            false,
+            // 遗留模式键（不参与逻辑，按历史默认值 off 写出）/ 上限 120 / 禁用名单空表
+            ChannelDietFilter.MODE_OFF,
+            ChannelDietFilter.LIMIT_DEFAULT,
+            List.of()
         );
     }
 
@@ -147,7 +166,8 @@ public record ChatBubbleConfig(
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
-            channelDietEnabled);
+            channelDietEnabled,
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
     }
 
     public ChatBubbleConfig withQuickChatPhrases(List<String> phrases) {
@@ -162,7 +182,8 @@ public record ChatBubbleConfig(
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
-            channelDietEnabled);
+            channelDietEnabled,
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
     }
 
     public ChatBubbleConfig withSidebarHidePatterns(List<String> patterns) {
@@ -177,7 +198,8 @@ public record ChatBubbleConfig(
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
-            channelDietEnabled);
+            channelDietEnabled,
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
     }
 
     public ChatBubbleConfig withBlockedPlayers(List<String> blocked) {
@@ -192,7 +214,8 @@ public record ChatBubbleConfig(
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
-            channelDietEnabled);
+            channelDietEnabled,
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
     }
 
     public ChatBubbleConfig withThemeValues(String theme, String themeAccent, Map<String, String> themeCustom) {
@@ -207,7 +230,8 @@ public record ChatBubbleConfig(
             uploadUrl, uploadField, uploadExtra, uploadResponse, messageGap, avatarSize, hideRepeatedAvatars, closeChatOnSend, bannerOpacity, bubbleSize, dndEnabled, publicOverlayEnabled,
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
-            channelDietEnabled);
+            channelDietEnabled,
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
     }
 
     /** 免打扰开关（标题栏月亮按钮写入，重启后保留）。
@@ -225,7 +249,8 @@ public record ChatBubbleConfig(
             this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), enabled, this.publicOverlayEnabled(),
             this.publicOverlayIdleSeconds(),
             this.dndWhisperPlayers(),
-            this.channelDietEnabled());
+            this.channelDietEnabled(),
+            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces());
     }
 
     /** 私聊免打扰名单整体替换（null → 空表）。名单里存玩家名，逐个私聊独立生效。 */
@@ -241,11 +266,14 @@ public record ChatBubbleConfig(
             this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), this.dndEnabled(), this.publicOverlayEnabled(),
             this.publicOverlayIdleSeconds(),
             normalizeWhisperDnd(players),
-            this.channelDietEnabled());
+            this.channelDietEnabled(),
+            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces());
     }
 
-    /** 通道节食开关（实验性，默认关闭）。关闭时 PLAY 阶段的通道声明与旧版完全一致。
-     *  即使置 true，也只在「服务端 brand 已知且不含 fabric」时才真正节食。 */
+    /** 通道节食总开关（实验性，默认关闭）。关闭 = 只统计不裁剪（发送时原样放行）；
+     *  打开 = 连接非 Fabric 服务器时按「通道节食设置」的模组勾选 + 上限裁剪通道声明。
+     *  即使置 true，也只在「服务端 brand 已知且不含 fabric」时才真正节食。
+     *  遗留的 {@link #channelDietMode} 不参与判定，这里原样透传、绝不被这个开关改写。 */
     public ChatBubbleConfig withChannelDietEnabled(boolean enabled) {
         return new ChatBubbleConfig(this.enabled(), this.theme(), this.themeAccent(), this.themeCustom(), this.redDotEnabled(), this.hideChatIcon(), this.animationEnabled(),
             this.systemChatAsBubble(), this.antiSpam,
@@ -258,7 +286,55 @@ public record ChatBubbleConfig(
             this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), this.dndEnabled(), this.publicOverlayEnabled(),
             this.publicOverlayIdleSeconds(),
             this.dndWhisperPlayers(),
-            enabled);
+            enabled,
+            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces());
+    }
+
+    /** 整体替换「被禁用的命名空间」名单（清洗规则见
+     *  {@link ChannelDietFilter#normalizeNamespaces}：小写、去重、e33chat 永不出现在名单里）。 */
+    public ChatBubbleConfig withChannelDietDisabledNamespaces(List<String> namespaces) {
+        return new ChatBubbleConfig(this.enabled(), this.theme(), this.themeAccent(), this.themeCustom(), this.redDotEnabled(), this.hideChatIcon(), this.animationEnabled(),
+            this.systemChatAsBubble(), this.antiSpam,
+            this.chatHistoryEnabled(), this.historyRetentionDays(), this.timeSeparatorMinutes(),
+            this.panelWidth(), this.bubbleCornerRadius(), this.ownBubbleColor(), this.otherBubbleColor(), this.ownTextColor(), this.otherTextColor(),
+            this.soundPublic(), this.soundSystem(), this.soundWhisper(), this.debugLog(), this.preserveInput(), this.colorCodes(), this.sidebarHidePatterns(), this.blockedPlayers(), this.quickChatPhrases(),
+            this.mentionBannerEnabled(), this.systemBannerEnabled(), this.mentionBannerDuration(), this.mentionSoundEnabled(), this.mentionRequireAt(), this.mentionWhisperBanner(),
+            this.blurEnabled(), this.panelOpacity(), this.soundVolume(), this.ownMentionNotify(), this.ownQuoteNotify(), this.ownWhisperNotify(), this.bannerCornerRadius(), this.bannerOffsetX(), this.bannerOffsetY(), this.bannerMaxStack(),
+            this.panelAnimStyle(), this.bannerAnimStyle(), this.popupAnimStyle(), this.messageAnimStyle(), this.imageRenderEnabled(), this.receiveImages(),
+            this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), this.dndEnabled(), this.publicOverlayEnabled(),
+            this.publicOverlayIdleSeconds(),
+            this.dndWhisperPlayers(),
+            this.channelDietEnabled(),
+            this.channelDietMode(), this.channelDietLimit(),
+            ChannelDietFilter.normalizeNamespaces(namespaces));
+    }
+
+    /** 设置通道上限（夹到 32~127，Paper 的硬上限是 127 条）。 */
+    public ChatBubbleConfig withChannelDietLimit(Integer limit) {
+        return new ChatBubbleConfig(this.enabled(), this.theme(), this.themeAccent(), this.themeCustom(), this.redDotEnabled(), this.hideChatIcon(), this.animationEnabled(),
+            this.systemChatAsBubble(), this.antiSpam,
+            this.chatHistoryEnabled(), this.historyRetentionDays(), this.timeSeparatorMinutes(),
+            this.panelWidth(), this.bubbleCornerRadius(), this.ownBubbleColor(), this.otherBubbleColor(), this.ownTextColor(), this.otherTextColor(),
+            this.soundPublic(), this.soundSystem(), this.soundWhisper(), this.debugLog(), this.preserveInput(), this.colorCodes(), this.sidebarHidePatterns(), this.blockedPlayers(), this.quickChatPhrases(),
+            this.mentionBannerEnabled(), this.systemBannerEnabled(), this.mentionBannerDuration(), this.mentionSoundEnabled(), this.mentionRequireAt(), this.mentionWhisperBanner(),
+            this.blurEnabled(), this.panelOpacity(), this.soundVolume(), this.ownMentionNotify(), this.ownQuoteNotify(), this.ownWhisperNotify(), this.bannerCornerRadius(), this.bannerOffsetX(), this.bannerOffsetY(), this.bannerMaxStack(),
+            this.panelAnimStyle(), this.bannerAnimStyle(), this.popupAnimStyle(), this.messageAnimStyle(), this.imageRenderEnabled(), this.receiveImages(),
+            this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), this.dndEnabled(), this.publicOverlayEnabled(),
+            this.publicOverlayIdleSeconds(),
+            this.dndWhisperPlayers(),
+            this.channelDietEnabled(),
+            this.channelDietMode(), ChannelDietFilter.clampLimit(limit), this.channelDietDisabledNamespaces());
+    }
+
+    /** 生效的通道上限（32~127，默认 120）。 */
+    public int channelDietLimitResolved() {
+        return ChannelDietFilter.clampLimit(channelDietLimit);
+    }
+
+    /** 生效的禁用命名空间名单（永不为 null，已归一）。 */
+    public List<String> channelDietDisabledResolved() {
+        return channelDietDisabledNamespaces != null
+            ? ChannelDietFilter.normalizeNamespaces(channelDietDisabledNamespaces) : List.of();
     }
 
     /** 开关「某个私聊对象」的免打扰（同名去重、大小写不敏感）。

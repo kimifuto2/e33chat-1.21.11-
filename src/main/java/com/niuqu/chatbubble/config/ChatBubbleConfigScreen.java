@@ -2,6 +2,7 @@ package com.niuqu.chatbubble.config;
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
 
 import com.niuqu.chatbubble.config.ChatBubbleConfig;
+import com.niuqu.chatbubble.channeldiet.ChannelDietFilter;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.render.ChatBubbleTheme;
@@ -113,8 +114,13 @@ public class ChatBubbleConfigScreen extends Screen {
     private List<String> blockedPlayers;
     // 私聊免打扰名单（玩家名）：本屏没有对应控件，但 saveAll 要原样写回
     private List<String> dndWhisperPlayers = new ArrayList<>();
-    /** 通道节食（实验性，默认关闭）：非 Fabric 服务器上把 PLAY 阶段的自定义通道声明压到最少。 */
+    /** 通道节食（实验性，默认关闭）——**唯一总开关**：开 = 按设置页的模组勾选 + 上限裁剪
+     *  通道声明（仅非 Fabric 服务器）；关 = 只统计不裁剪。 */
     private boolean channelDietEnabled;
+    /** 允许声明的通道上限（32~127，默认 120）。二级界面里可改。 */
+    private int channelDietLimit = ChannelDietFilter.LIMIT_DEFAULT;
+    /** 在「通道节食设置…」里被关掉的命名空间（这些命名空间下的通道一条都不声明）。 */
+    private List<String> channelDietDisabledNamespaces = new ArrayList<>();
 
     // 打开时的快照——用于 changeCount / revertAll
     private ChatBubbleConfig snapshot;
@@ -232,8 +238,11 @@ public class ChatBubbleConfigScreen extends Screen {
             // 在私聊视图下点它切换的就是当前对象的 DND），
             // 保存时必须原样带回，否则"改任何一个设置"都会把名单清空。
             dndWhisperPlayers,
-            // 通道节食（实验性）：默认关闭；旧配置缺键时 loadFromConfig 已按 false 处理
-            channelDietEnabled));
+            // 通道节食：唯一总开关（开 = 裁剪，关 = 只统计）。
+            // channelDietMode 是 3.0.2 的遗留键，不再参与逻辑，原样带回磁盘上的值。
+            channelDietEnabled,
+            ChatBubbleClientSetup.config().channelDietMode(),
+            channelDietLimit, channelDietDisabledNamespaces));
     }
 
     private void loadFromConfig() {
@@ -284,8 +293,11 @@ public class ChatBubbleConfigScreen extends Screen {
         blockedPlayers = new ArrayList<>(cfg.blockedPlayers());
         // 旧配置文件没有这个键 → null，视为空名单
         dndWhisperPlayers = new ArrayList<>(cfg.dndWhisperPlayers() != null ? cfg.dndWhisperPlayers() : List.of());
-        // 可空：旧配置文件没有这个键 → 视为默认（关闭）
-        channelDietEnabled = cfg.channelDietEnabled() != null && cfg.channelDietEnabled();
+        // 通道节食：唯一总开关。旧配置文件没有这个键 → null → 视为关闭（只统计不裁剪）。
+        // 遗留键 channelDietMode 不在本屏读取，也绝不用它反推开关。
+        channelDietEnabled = Boolean.TRUE.equals(cfg.channelDietEnabled());
+        channelDietLimit = cfg.channelDietLimitResolved();
+        channelDietDisabledNamespaces = new ArrayList<>(cfg.channelDietDisabledResolved());
         messageGap = cfg.messageGap() != null ? cfg.messageGap() : 6;
         avatarSize = cfg.avatarSize() != null ? cfg.avatarSize() : 20;
         bubbleSize = cfg.bubbleSize() != null ? cfg.bubbleSize() : 9;
@@ -396,7 +408,7 @@ public class ChatBubbleConfigScreen extends Screen {
     // / 色板点击全部由注册表派生，杜绝手写清单漂移。
     // Fabric 无 ModConfigSpec：Ref 是字段的 getter/setter 对（Screen 的 mutable copies）。
     // 注册表引实例字段，故非 static；lambda 惰性求值，loadFromConfig 前只建引用。
-    private enum Kind { BOOL, INT, SLIDER, HEX, TEXT, PATTERN, ENUM_CYCLE, ACCENT_CYCLE, THEME_CYCLE, TIME_SEP }
+    private enum Kind { BOOL, INT, SLIDER, HEX, TEXT, PATTERN, ENUM_CYCLE, ACCENT_CYCLE, THEME_CYCLE, TIME_SEP, OPEN_SCREEN }
 
     private record Ref<T>(java.util.function.Supplier<T> getter, java.util.function.Consumer<T> setter) {
         static Ref<Boolean> b(java.util.function.BooleanSupplier g, java.util.function.Consumer<Boolean> s) {
@@ -444,6 +456,10 @@ public class ChatBubbleConfigScreen extends Screen {
         }
         static OptionDef timeSep(String key, Ref<Integer> r) {
             return new OptionDef(key, Kind.TIME_SEP, r, 0, 0, 0, null);
+        }
+        /** 二级界面入口：本身不承载配置值（Ref 是永不变化的哑值），点击后 setScreen。 */
+        static OptionDef link(String key) {
+            return new OptionDef(key, Kind.OPEN_SCREEN, Ref.b(() -> false, v -> {}), 0, 0, 0, null);
         }
     }
 
@@ -535,10 +551,13 @@ public class ChatBubbleConfigScreen extends Screen {
             OptionDef.bool("e33chat.config.close_chat_on_send", Ref.b(() -> closeChatOnSend, v -> closeChatOnSend = v))),
         SectionDef.of("e33chat.config.section.upload",
             OptionDef.text("e33chat.config.upload_url", Ref.s(() -> uploadUrl, v -> uploadUrl = v))),
-        // 网络/服务端联动：通道节食（实验性）。只影响 PLAY 阶段发给服务端的自定义通道声明，
-        // 默认关闭；开启后仍只在「服务端 brand 已知且不含 fabric」时才真正节食。
+        // 网络/服务端联动：通道节食（实验性）。本行是**唯一总开关**（开 = 裁剪 / 关 = 只统计），
+        // 只影响 PLAY 阶段发给服务端的自定义通道声明，且只在「服务端 brand 已知且不含 fabric」时
+        // 才真正裁剪；具体的模组勾选与上限在二级界面里调。
         SectionDef.of("e33chat.config.section.network",
-            OptionDef.bool("e33chat.config.channel_diet", Ref.b(() -> channelDietEnabled, v -> channelDietEnabled = v))),
+            OptionDef.bool("e33chat.config.channel_diet", Ref.b(() -> channelDietEnabled, v -> channelDietEnabled = v)),
+            // 二级界面：逐个模组的开关 + 实时超限红/达标绿 + 上限
+            OptionDef.link("e33chat.config.channel_diet_settings")),
         SectionDef.of("e33chat.config.section.debug",
             OptionDef.bool("e33chat.config.debug_log", Ref.b(() -> debugLog, v -> debugLog = v)),
             OptionDef.bool("e33chat.config.own_mention_notify", Ref.b(() -> ownMentionNotify, v -> ownMentionNotify = v)),
@@ -641,6 +660,7 @@ public class ChatBubbleConfigScreen extends Screen {
             case THEME_CYCLE -> new Opt(d.key(), this::mkThemeButton, d.previewColor(), d.ref());
             case ACCENT_CYCLE -> new Opt(d.key(), this::mkAccentButton, d.previewColor(), d.ref());
             case TIME_SEP -> new Opt(d.key(), this::mkTimeSepButton, d.previewColor(), d.ref());
+            case OPEN_SCREEN -> new Opt(d.key(), this::mkChannelDietButton, d.previewColor(), d.ref());
         };
     }
 
@@ -834,6 +854,25 @@ public class ChatBubbleConfigScreen extends Screen {
                 : next + " " + Text.translatable("e33chat.config.time_separator.minute").getString();
             btn.setMessage(Text.literal(nl));
         }).position(inputX, y).size(INPUT_W, 20).build();
+    }
+
+    /**
+     * 「通道节食设置…」入口（高级 → 网络与服务端）。
+     *
+     * <p>新界面自己负责「点一下就写盘」，所以这里必须通过 sink 把结果回填到本屏的
+     * 本地副本：否则在本屏点「完成」时 {@code saveAll()} 会拿打开时的旧值把新设置覆盖掉。
+     * 总开关（{@code channelDietEnabled}）只在**本屏**这一行，二级界面里没有模式按钮。
+     */
+    private ButtonWidget mkChannelDietButton(int y) {
+        return ButtonWidget.builder(
+            Text.translatable("e33chat.config.channel_diet_open"),
+            btn -> {
+                if (client == null) return;
+                client.setScreen(new ChannelDietScreen(this,
+                    disabled -> channelDietDisabledNamespaces = new ArrayList<>(disabled),
+                    limit -> channelDietLimit = limit));
+            }
+        ).position(inputX, y).size(INPUT_W, 20).build();
     }
 
     private TextFieldWidget mkHexBox(int y, String initial, java.util.function.Consumer<String> onChange) {

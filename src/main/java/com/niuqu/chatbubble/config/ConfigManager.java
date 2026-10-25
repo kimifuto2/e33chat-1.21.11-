@@ -2,6 +2,7 @@ package com.niuqu.chatbubble.config;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.niuqu.chatbubble.channeldiet.ChannelDietFilter;
 import org.slf4j.LoggerFactory;
 
 import java.io.*;
@@ -39,6 +40,11 @@ public final class ConfigManager {
 
     private static ChatBubbleConfig mergeWithDefaults(ChatBubbleConfig c) {
         ChatBubbleConfig d = ChatBubbleConfig.defaults();
+        // 通道节食：唯一事实来源是 channelDietEnabled。旧配置文件没有这个键 → null →
+        // 回落默认 false（= 只统计不裁剪）。遗留键 channelDietMode（3.0.2 的三态模式）
+        // 不再参与任何逻辑：**不拿它反推开关**（避免把用户设好的开关意外改掉），
+        // 只原样透传，让老配置里的值不会被抹掉。
+        boolean dietOn = Boolean.TRUE.equals(c.channelDietEnabled());
         return new ChatBubbleConfig(
             c.enabled(), c.theme() != null ? c.theme() : d.theme(),
             c.themeAccent() != null ? c.themeAccent() : d.themeAccent(),
@@ -97,8 +103,16 @@ public final class ConfigManager {
             clampIdleSeconds(c.publicOverlayIdleSeconds(), d.publicOverlayIdleSeconds()),
             // 私聊免打扰名单：旧配置文件没有这个键 → 读成 null，这里回落成空表（= 没有私聊被免打扰）
             c.dndWhisperPlayers() != null ? c.dndWhisperPlayers() : d.dndWhisperPlayers(),
-            // 通道节食：旧配置文件没有这个键 → null → 回落默认（关闭），显式 true 才开启
-            c.channelDietEnabled() != null ? c.channelDietEnabled() : d.channelDietEnabled());
+            // 通道节食：旧配置文件没有这个键 → null → 回落默认（关闭，只统计不裁剪）
+            dietOn,
+            // 遗留模式键（不参与逻辑，原样透传）、上限（越界夹回 32~127，缺键回落 120）、
+            // 被禁用的命名空间（缺键回落空表）
+            c.channelDietMode(),
+            ChannelDietFilter.clampLimit(
+                c.channelDietLimit() != null ? c.channelDietLimit() : d.channelDietLimit()),
+            ChannelDietFilter.normalizeNamespaces(
+                c.channelDietDisabledNamespaces() != null
+                    ? c.channelDietDisabledNamespaces() : d.channelDietDisabledNamespaces()));
     }
 
     /** 公屏小窗静默秒数夹到声明的 1~60 秒范围（null → 默认值）。 */
