@@ -23,6 +23,7 @@ import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
@@ -42,6 +43,14 @@ public class ChatBubbleMod implements ModInitializer {
 
     private static final Map<UUID, QuotePending> pendingQuotes = new HashMap<>();
     private static final Deque<HistoryPayload.HistoryEntry> historyBuffer = new ArrayDeque<>();
+
+    /** 引用块广播的去重标记：{@code <玩家 UUID>|<msgHash>} → 广播时刻。
+     *
+     *  <p>实机日志显示客户端是「先聊天、后 quote_sync」，所以两条广播路径都可能拿到同一条
+     *  引用（{@code CHAT_MESSAGE} 兜底可能在 receiver 之前或之后）。两条路径共用这个短寿命
+     *  集合，同一个 {@code msgHash} 只广播一次 —— 窗口与 {@link QuotePending} 的 10s 一致。 */
+    private static final Map<String, Long> broadcastQuotes = new HashMap<>();
+    private static final long QUOTE_TTL_MS = 10_000L;
 
     // Server-side settings (loaded per-world from <world>/serverconfig/e33chat-server.json)
     private static boolean historyEnabled;
@@ -80,8 +89,66 @@ public class ChatBubbleMod implements ModInitializer {
     // it) must not tag a later unrelated message — expire after 10s (parity with Forge)
     private static QuotePending takeQuote(UUID playerUUID) {
         QuotePending quote = pendingQuotes.remove(playerUUID);
-        if (quote != null && System.currentTimeMillis() - quote.time() > 10_000) return null;
+        if (quote != null && System.currentTimeMillis() - quote.time() > QUOTE_TTL_MS) return null;
         return quote;
+    }
+
+    /**
+     * 登记「等聊天事件来取」的兼容状态（quote_sync 路径仍然保留，供能触发
+     * {@code CHAT_MESSAGE} 的服务器在历史记录里带出 replyContent/replySender）。
+     *
+     * <p>顺手清掉过期的条目：离线服的聊天事件不触发，{@code takeQuote()} 永远没机会消费，
+     * 不清就会随在线过的玩家数一直涨。
+     */
+    private static void rememberPendingQuote(ServerPlayerEntity player, String messageHash,
+                                              String quotedHash, String quotedSender,
+                                              String quotedContent) {
+        long now = System.currentTimeMillis();
+        pendingQuotes.entrySet().removeIf(e -> now - e.getValue().time() > QUOTE_TTL_MS);
+        pendingQuotes.put(player.getUuid(),
+            new QuotePending(quotedSender, quotedContent, messageHash, quotedHash, now));
+    }
+
+    /**
+     * 唯一的 {@link ChatMetaPayload} 广播入口（quote_sync 即时广播 / CHAT_MESSAGE 兜底 /
+     * 私聊命令三条路径都走这里），发给**所有**在线玩家（含发送者自己，路径统一）。
+     *
+     * @param dedupeQuote true = 这次真的带引用块，用 {@code <UUID>|<msgHash>} 做短期去重，
+     *                    保证同一 {@code msgHash} 只广播一次；false = 纯 @ 提到广播，不占
+     *                    去重标记（否则会把随后到达的 quote_sync 误判成重复而丢掉引用块）。
+     */
+    private static void broadcastChatMeta(MinecraftServer server, ServerPlayerEntity sender,
+                                          String messageHash, String quotedHash,
+                                          String quotedSender, String quotedContent,
+                                          List<String> mentions, String source,
+                                          boolean dedupeQuote) {
+        String msgHash = messageHash == null ? "" : messageHash;
+        String qHash = quotedHash == null ? "" : quotedHash;
+        String qSender = quotedSender == null ? "" : quotedSender;
+        String qContent = quotedContent == null ? "" : quotedContent;
+        String from = sender.getName().getString();
+
+        if (dedupeQuote) {
+            String key = sender.getUuid() + "|" + msgHash;
+            long now = System.currentTimeMillis();
+            broadcastQuotes.entrySet().removeIf(e -> now - e.getValue() > QUOTE_TTL_MS);
+            Long prev = broadcastQuotes.put(key, now);
+            if (prev != null && now - prev <= QUOTE_TTL_MS) {
+                srvLog("chat_meta skipped (dup) | from=" + from + " | msgHash=" + preview(msgHash)
+                    + " | via=" + source + " (same msgHash already broadcast)");
+                return;
+            }
+        }
+
+        ChatMetaPayload meta = new ChatMetaPayload(sender.getUuid(), from, msgHash, qSender, qContent,
+            mentions == null ? Collections.<String>emptyList() : mentions, qHash);
+        var recipients = server.getPlayerManager().getPlayerList();
+        for (ServerPlayerEntity p : recipients) ServerPlayNetworking.send(p, meta);
+        srvLog("chat_meta broadcast | from=" + from + " | msgHash=" + preview(msgHash)
+            + " | quotedHash=" + preview(qHash)
+            + " | quoteSender=" + preview(qSender) + " | quote=" + preview(qContent)
+            + " | mentions=" + (mentions == null ? 0 : mentions.size())
+            + " | via=" + source + " | recipients=" + recipients.size());
     }
 
     /** 客户端送来的指纹仅作为字符串转发：限长避免它被当成「广播放大器」
@@ -89,6 +156,39 @@ public class ChatBubbleMod implements ModInitializer {
     private static String clampHash(String hash) {
         if (hash == null || hash.isEmpty()) return "";
         return hash.length() <= 64 ? hash : hash.substring(0, 64);
+    }
+
+    /**
+     * {@code messageHash} 的契约是「本次消息明文 {@link String#hashCode()} 的十进制串」
+     * （接收端 {@code ChatMessageStore.addMessage} 用同一算法对回聊天回显）。
+     *
+     * <p>旧版客户端（≤2.4.2）曾直接发明文，于是服务端原样广播后所有客户端都 match 不上。
+     * 这里做一次兜底归一化：不像 hashCode 的形态（非十进制串）就自己哈希掉 —— 混版本时
+     * 也能对上；新版客户端送来的就是十进制串，原样放行。
+     */
+    private static String normalizeMessageHash(String fromClient) {
+        String hash = clampHash(fromClient);
+        if (hash.isEmpty()) return hash;
+        boolean numeric = hash.length() <= 11;
+        for (int i = 0; numeric && i < hash.length(); i++) {
+            char c = hash.charAt(i);
+            if (i == 0 && c == '-') continue;
+            if (c < '0' || c > '9') numeric = false;
+        }
+        return numeric ? hash : String.valueOf(hash.hashCode());
+    }
+
+    /** 服务端诊断日志：专用服务器读不到客户端的 debugLog 配置，所以直接打 INFO。
+     *  只在引用/元数据这类低频事件上打，避免刷屏。 */
+    private static void srvLog(String msg) {
+        com.mojang.logging.LogUtils.getLogger().info("[e33chat] srv | " + msg);
+    }
+
+    /** 日志里只放前 40 个字符（换行压成空格），别把整段引用原文/长消息写进日志。 */
+    private static String preview(String s) {
+        if (s == null || s.isEmpty()) return "";
+        String one = s.replace('\n', ' ').replace('\r', ' ');
+        return one.length() <= 40 ? one : one.substring(0, 40) + "...";
     }
 
     @Override
@@ -121,13 +221,37 @@ public class ChatBubbleMod implements ModInitializer {
         });
 
         ServerPlayNetworking.registerGlobalReceiver(QuoteSyncPayload.ID, (payload, context) -> {
+            // 必须**就地**处理，不能再套一层 context.server().execute()：
+            // Fabric 保证 payload receiver 已经在服务端线程跑（ServerPlayNetworking.PlayPayloadHandler
+            // 的约定 + AbstractChanneledNetworkAddon 自己会 schedule 到主线程），多一跳只会推迟广播。
             ServerPlayerEntity player = context.player();
-            context.server().execute(() -> {
-                String messageHash = payload.messageHash();
-                pendingQuotes.put(player.getUuid(),
-                    new QuotePending(payload.quotedSenderName(), payload.quotedContent(), messageHash,
-                        clampHash(payload.quotedHash()), System.currentTimeMillis()));
-            });
+            // 归一化：messageHash 的契约是「本次消息明文的十进制 hashCode」，旧客户端（≤2.4.2）
+            // 曾直接发明文 —— 归一化后客户端才 match 得上自己的聊天回显。
+            String messageHash = normalizeMessageHash(payload.messageHash());
+            String quotedHash = clampHash(payload.quotedHash());
+
+            // 兼容兜底：仍登记 pending，让能触发 CHAT_MESSAGE 的服务器（单机 / 正版签名服）
+            // 照旧取得到引用（历史记录里的 replyContent/replySender 也靠它）。
+            rememberPendingQuote(player, messageHash, quotedHash,
+                payload.quotedSenderName(), payload.quotedContent());
+            srvLog("quote_sync recv | player=" + player.getName().getString()
+                + " | msgHash=" + preview(messageHash)
+                + " | quotedHash=" + preview(payload.quotedHash())
+                + " | quoteSender=" + preview(payload.quotedSenderName())
+                + " | quote=" + preview(payload.quotedContent()));
+
+            // 核心修复：**收到就广播，不再等聊天事件**。
+            // 离线服（online-mode=false）的聊天是未签名的 [Not Secure] 消息，
+            // ServerMessageEvents.CHAT_MESSAGE 根本不触发（拿不到 sender/message）→ 旧的
+            // 「聊天时 takeQuote() 再广播」模型永远不广播；而且客户端实测是「先聊天、
+            // 后 quote_sync」，那个模型在时序上本来就不可靠。
+            // 广播给所有在线玩家（含发送者自己，路径统一）：客户端按 messageHash 匹配本地
+            // 回显，匹配不上就先挂 pending（10s TTL）再丢弃，跨端行为安全。
+            // QuoteSyncPayload 没有私聊目标字段，引用一律广播；私聊的引用块本来也是
+            // 由 receive 端按 messageHash 自行匹配，不会串到公屏气泡上。
+            broadcastChatMeta(context.server(), player, messageHash, quotedHash,
+                payload.quotedSenderName(), payload.quotedContent(),
+                Collections.emptyList(), "quote_sync", true);
         });
 
         // Server-config GUI save: validate, persist to JSON, rebroadcast
@@ -157,19 +281,36 @@ public class ChatBubbleMod implements ModInitializer {
             List<String> mentions = extractMentions(rawText, playerCount);
 
             QuotePending quote = takeQuote(sender.getUuid());
-            String messageHash = quote != null ? quote.messageHash() : String.valueOf(rawText.hashCode());
+            String messageHash = quote != null
+                ? normalizeMessageHash(quote.messageHash())
+                : String.valueOf(rawText.hashCode());
             String quoteSender = quote != null ? quote.quotedSenderName() : "";
             String quoteContent = quote != null ? quote.quotedContent() : "";
             // 被引用消息的指纹：客户端算好一起发上来，服务端只做长度护栏后原样广播
             String quotedHash = quote != null ? quote.quotedHash() : "";
 
             if (quote != null || !mentions.isEmpty()) {
-                ChatMetaPayload meta = new ChatMetaPayload(
-                    sender.getUuid(), sender.getName().getString(), messageHash,
-                    quoteSender, quoteContent, mentions, quotedHash);
-                for (ServerPlayerEntity p : sender.getEntityWorld().getServer().getPlayerManager().getPlayerList()) {
-                    ServerPlayNetworking.send(p, meta);
+                var metaServer = sender.getEntityWorld().getServer();
+                if (metaServer != null) {
+                    if (quote != null) {
+                        // 兼容兜底路径：与 quote_sync 的即时广播共用去重集合 —— quote_sync
+                        // 已经广播过同一个 msgHash 时这里直接跳过，不会重复发；反过来
+                        // （聊天事件先到、quote_sync 后到）则由 receiver 补发。
+                        broadcastChatMeta(metaServer, sender, messageHash, quotedHash,
+                            quoteSender, quoteContent, mentions, "chat_message", true);
+                    } else {
+                        // 纯 @ 提到广播：不带引用块，且**不占**去重标记（否则会把随后到达的
+                        // quote_sync 误判成重复，真正的引用块就丢了）
+                        broadcastChatMeta(metaServer, sender, messageHash, "", "", "",
+                            mentions, "chat_message_mentions", false);
+                    }
                 }
+            } else if (templateDebug) {
+                // 只在服务器配置开 template_debug 时打（否则每条公屏都多一行）：
+                // 有它就能区分「CHAT_MESSAGE 钩子没跑」和「引用没送到服务端」
+                srvLog("chat_meta skipped | from=" + sender.getName().getString()
+                    + " | msgHash=" + messageHash
+                    + " | no pending quote and no mentions (quote_sync 没收到 / 已过期 / 被别的聊天处理抢先消费)");
             }
 
             addToHistory(new HistoryPayload.HistoryEntry(
@@ -234,12 +375,12 @@ public class ChatBubbleMod implements ModInitializer {
         if (sender == null) return;
         QuotePending quote = takeQuote(sender.getUuid());
         if (quote == null) return;
-        ChatMetaPayload meta = new ChatMetaPayload(sender.getUuid(), sender.getName().getString(),
-            quote.messageHash(), quote.quotedSenderName(), quote.quotedContent(),
-            Collections.emptyList(), quote.quotedHash());
-        for (ServerPlayerEntity p : source.getServer().getPlayerManager().getPlayerList()) {
-            ServerPlayNetworking.send(p, meta);
-        }
+        String messageHash = normalizeMessageHash(quote.messageHash());
+        // 同一入口：私聊的 /msg 若它的 quote_sync 已经先广播过（客户端发命令前就发 quote_sync），
+        // 这里会被 msgHash 去重，不会重复发两遍。
+        broadcastChatMeta(source.getServer(), sender, messageHash, quote.quotedHash(),
+            quote.quotedSenderName(), quote.quotedContent(),
+            Collections.emptyList(), "private_message", true);
     }
 
     private static void loadConfig(ServerConfig config) {

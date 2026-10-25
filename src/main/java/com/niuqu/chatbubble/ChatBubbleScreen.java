@@ -3879,15 +3879,24 @@ if (cmpLogged < 3 && quoteSenderMatches(m, owner.replySender())) {
                     // 靠它在全量消息里精确定位原文（src=hash）。必须用「明文去 § 码」算，
                     // 否则自己带 &颜色码的本地气泡与别人看到的内容算出的值不一致。
                     String quotedHash = ChatMessageStore.quoteHash(target.content().getString());
+                    // messageHash 的契约：**本次消息明文 hashCode 的十进制串**，与接收端
+                    // ChatMessageStore.addMessage 里的 messageHash = String.valueOf(content.hashCode())
+                    // 完全同算法（服务端只做长度护栏后原样广播）。这里以前直接发 displayText，
+                    // 于是服务端广播的 meta 谁也 match 不上 → 只有发起者（走本地 pendingReply）
+                    // 看得到引用块，其他玩家只看到纯文本。
+                    final String messageHash = String.valueOf(displayText.hashCode());
                     ChatMessageStore.setPendingReply(quoted, quoteSender);
                     // Optional payload: only send when the server registered e33chat:quote_sync.
                     // Without this guard, right-click quote on servers without the E33Chat
                     // server mod still works locally but can fail on the network layer.
                     if (ClientPlayNetworking.canSend(QuoteSyncPayload.ID)) {
                         try {
-                            ClientPlayNetworking.send(new QuoteSyncPayload(quoteSender, quoted, displayText, quotedHash));
+                            ClientPlayNetworking.send(new QuoteSyncPayload(quoteSender, quoted, messageHash, quotedHash));
+                            ChatMessageStore.debugLog(() -> "[e33chat] quote_sync send | msgHash=" + messageHash
+                                + " | quotedHash=" + quotedHash + " | quoteSender=" + quoteSender
+                                + " | quoteLen=" + quoted.length());
                         } catch (Exception e) {
-                            ChatMessageStore.debugLog(() -> "[e33chat] quote_sync skipped | " + e.getMessage());
+                            ChatMessageStore.debugLog(() -> "[e33chat] quote_sync failed | " + e.getMessage());
                         }
                     } else {
                         ChatMessageStore.debugLog(() -> "[e33chat] quote_sync skipped | server has no e33chat:quote_sync channel");

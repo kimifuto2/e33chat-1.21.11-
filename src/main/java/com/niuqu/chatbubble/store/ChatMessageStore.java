@@ -474,6 +474,9 @@ public class ChatMessageStore {
             replyContent = pending.quoteContent();
             replySender = pending.quoteSender();
             replyQuotedHash = pending.quotedHash();
+            final String pendingQuoteSender = replySender;
+            debugLog(() -> "[e33chat] chat_meta attached from pending | msgHash=" + messageHash
+                + " | quoteSender=" + pendingQuoteSender);
         }
 
         ChatMessage created = new ChatMessage(
@@ -1177,6 +1180,10 @@ public class ChatMessageStore {
                                       String quoteSender, String quoteContent, List<String> mentionTargets,
                                       String quotedHash) {
         String safeQuotedHash = quotedHash == null ? "" : quotedHash;
+        debugLog(() -> "[e33chat] chat_meta recv | from=" + senderName + " | msgHash=" + messageHash
+            + " | quotedHash=" + safeQuotedHash
+            + " | quoteLen=" + (quoteContent == null ? 0 : quoteContent.length())
+            + " | mentions=" + (mentionTargets == null ? 0 : mentionTargets.size()));
         for (int i = messages.size() - 1; i >= 0; i--) {
             ChatMessage msg = messages.get(i);
             // Offline/cracked players fall back to UUID(0,0) on the receiving side,
@@ -1192,6 +1199,9 @@ public class ChatMessageStore {
                 if (System.currentTimeMillis() - msg.time() > 5_000) continue;
                 if (!quoteContent.isEmpty()) {
                     messages.set(i, msg.withReply(quoteContent, quoteSender, safeQuotedHash));
+                    final int appliedIndex = i;
+                    debugLog(() -> "[e33chat] chat_meta applied | index=" + appliedIndex
+                        + " | msgHash=" + messageHash + " | quoteSender=" + quoteSender);
                     String playerName = localPlayerSupplier.get() != null
                         ? localPlayerSupplier.get().getName().getString() : "";
                     if (!msg.isOwn() && !playerName.isEmpty()
@@ -1212,6 +1222,8 @@ public class ChatMessageStore {
             EchoTracker.prunePendingMetas(cutoff);
             EchoTracker.putPendingMeta(messageHash, senderUUID, quoteSender, quoteContent,
                 mentionTargets, safeQuotedHash);
+            debugLog(() -> "[e33chat] chat_meta pending | no local echo yet for msgHash=" + messageHash
+                + " (attaches on capture, 10s TTL)");
         }
     }
 

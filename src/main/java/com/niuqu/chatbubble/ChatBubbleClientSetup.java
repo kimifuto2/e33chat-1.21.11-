@@ -8,11 +8,14 @@ import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.config.ServerConfigScreen;
 import com.niuqu.chatbubble.config.ConfigManager;
 import com.niuqu.chatbubble.image.ImageLoader;
+import com.niuqu.chatbubble.mixin.ClientCommonNetworkHandlerAccessor;
 import com.niuqu.chatbubble.network.ChatMetaPayload;
 import com.niuqu.chatbubble.network.ConfigSyncPayload;
 import com.niuqu.chatbubble.network.ConfigSyncV2Payload;
 import com.niuqu.chatbubble.network.HistoryPayload;
 import com.niuqu.chatbubble.network.MediaCapPayload;
+import com.niuqu.chatbubble.network.MediaResponsePayload;
+import com.niuqu.chatbubble.network.MediaUploadAckPayload;
 import com.niuqu.chatbubble.network.ServerConfigScreenPayload;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -22,6 +25,9 @@ import net.fabricmc.fabric.api.client.screen.v1.ScreenEvents;
 import net.fabricmc.fabric.api.resource.ResourceManagerHelper;
 import net.fabricmc.fabric.api.resource.SimpleSynchronousResourceReloadListener;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ClientCommonNetworkHandler;
+import net.minecraft.client.network.ClientConfigurationNetworkHandler;
+import net.minecraft.client.network.ServerInfo;
 import net.minecraft.resource.ResourceManager;
 import net.minecraft.resource.ResourceType;
 import net.minecraft.util.Identifier;
@@ -50,7 +56,17 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
     /** 记住「服务端也装了 E33Chat」的服务器地址；只对它们声明通道。自动维护，玩家无需手改。 */
     private static final String E33_SERVERS_FILE = "e33chat-servers.txt";
 
-    private static boolean customChannelsRegistered;
+    // ── 自定义载荷通道的「按连接」注册状态 ────────────────────────────────────
+    // 旧实现用一个进程级一次性闩锁（注册过就永不再注销），单机/LAN 注册过的接收器会残留到
+    // 之后的每一个连接；连 Paper 时 Fabric 会把它们塞进 minecraft:register 声明出去，被
+    // "Invalid custom payload payload!" 踢掉。现在改为：进入配置阶段先全部注销，再按本次
+    // 连接的目标决定是否注册；离开世界/服务器时注销。activeChannelIds = 本连接真正注册的 id。
+    /** 本连接已注册的 GlobalReceiver id（注销后清空）；所有读写都在类锁内，见下面两个方法。 */
+    private static final java.util.Set<Identifier> activeChannelIds = new java.util.LinkedHashSet<>();
+    /** 有一次连接正在进行（配置阶段开始 ~ 落地成 PLAY 之前）：此时 world 为 null 但**不是**退世界。 */
+    private static volatile boolean connectionPending;
+    /** 已经成功 JOIN 过（真的进过世界/服务器），用于识别「退世界没收到 DISCONNECT」的兜底。 */
+    private static volatile boolean playSessionSeen;
     private static java.util.Set<String> rememberedServers;
 
     // ── 「服务端是否也装了本模组」的探测状态 ──────────────────────────────────
@@ -106,14 +122,90 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
         return whisperUnavailableNotices.add(key);
     }
 
+    /**
+     * 从网络处理器上直接读目标服务器地址 —— **配置阶段与游戏阶段共用的唯一取地址入口**。
+     *
+     * <p>为什么不能只靠 {@code client.getCurrentServerEntry()}：1.21.11 里它的字节码是
+     * {@code Nullables.map(getNetworkHandler(), h -> h.getServerInfo())}，而
+     * {@code getNetworkHandler()} 只在 PLAY 阶段才有值。自定义载荷通道的声明发生在
+     * **配置阶段**，那一刻它恒为 null —— 所以按地址的白名单从未真正生效过（每次都退化成
+     * 「地址未知 → 不注册」或更糟的「地址未知 → 放行」）。{@code serverInfo} 是
+     * {@code ClientCommonNetworkHandler} 的 protected final 字段，在构造函数里由
+     * {@code ClientConnectionState.serverInfo()} 赋值，配置阶段就已经有值；同一实例随后被
+     * 传入 PLAY 阶段的 {@code ClientConnectionState}（见
+     * {@code ClientConfigurationNetworkHandler.onReady}），因此两个阶段读到的地址完全一致。
+     *
+     * @param handler 配置阶段的 {@code ClientConfigurationNetworkHandler} 或 PLAY 阶段的
+     *                {@code ClientPlayNetworkHandler}，null 表示没有连接
+     * @return 小写去空白的地址；拿不到（单机/未连接/accessor 未生效）返回 null
+     */
+    private static String serverAddressFromHandler(ClientCommonNetworkHandler handler) {
+        if (handler == null) return null;
+        try {
+            ServerInfo info = ((ClientCommonNetworkHandlerAccessor) handler).e33chat$getServerInfo();
+            if (info == null) return null;
+            String a = info.address;
+            return (a == null || a.isBlank()) ? null : a.trim().toLowerCase(java.util.Locale.ROOT);
+        } catch (Throwable t) {
+            // 安全默认：取不到就当「未知」，调用方一律按「不注册」处理，绝不放宽成放行
+            ChatMessageStore.debugLog("[e33chat] server address lookup failed | " + t);
+            return null;
+        }
+    }
+
     /** 当前连接的目标服务器地址；单机/局域网（集成服务器）返回 null。 */
     private static String currentServerAddress(MinecraftClient client) {
         try {
-            if (client == null || client.getCurrentServerEntry() == null) return null;
+            if (client == null) return null;
+            // PLAY 阶段：先读网络处理器上的 serverInfo（与配置阶段同一个字段、同一个值），
+            // 这样「JOIN 时记住的地址」和「配置阶段比对的地址」一定是同一个字符串。
+            String fromHandler = serverAddressFromHandler(client.getNetworkHandler());
+            if (fromHandler != null) return fromHandler;
+            if (client.getCurrentServerEntry() == null) return null;
             String a = client.getCurrentServerEntry().address;
             return (a == null || a.isBlank()) ? null : a.trim().toLowerCase(java.util.Locale.ROOT);
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    /**
+     * 配置阶段的「本连接要不要声明自定义通道」决定。INIT 与 START 共用（幂等）：先无条件注销
+     * 上一次连接的残留，再按 {@code 集成服务器 / 本地网段 / 白名单} 决定是否重新注册。
+     *
+     * <p>**安全默认**：地址拿不到、或拿到了但既不是本地也不在白名单里 → 什么都不注册。
+     * 绝不能因为 {@code addr == null} 就退化成「放行」。
+     */
+    private static void decideConfigurationChannels(ClientConfigurationNetworkHandler handler,
+                                                    MinecraftClient client,
+                                                    String phase) {
+        try {
+            unregisterCustomChannels("configuration " + phase);
+            // 集成服务器（单机 / 自己是局域网主机）：用 client.getServer() 判定（不看地址），
+            // 这类目标一定是同一个 JVM 里的服务端，声明通道零风险。注意 START 一定晚于
+            // SERVER_STARTING，所以这里必须重新登记（刚被上面的注销清掉了）。
+            boolean integrated = client.getServer() != null;
+            // 远程连接的地址**只能**从配置阶段自己的网络处理器上取：getCurrentServerEntry()
+            // 由 player 派生，此刻恒为 null（这正是白名单长期失效的根因）。
+            String addr = serverAddressFromHandler(handler);
+            if (addr == null) addr = currentServerAddress(client);   // 兜底（正常不会命中）
+            // 局域网/私有网段 = 玩家自己的房间：等同单机待遇，配置阶段就注册，
+            // 不再依赖白名单（否则别人的局域网房间要「第二次进房」才有 interop）。
+            boolean local = addr != null && isLocalAddress(addr);
+            boolean remembered = addr != null && rememberedServers().contains(addr);
+            boolean allowed = integrated || local || remembered;
+            if (allowed) registerCustomChannels();
+            com.mojang.logging.LogUtils.getLogger().info(
+                "[e33chat] custom payload channels | phase={} | integrated={} | local={} | remote={} | addr='{}' | channels={}",
+                phase,
+                integrated ? "yes" : "no",
+                local ? "on" : "off",
+                remembered ? "whitelist" : "not-whitelisted",
+                addr,
+                channelsActive() ? "on" : "off");
+        } catch (Throwable t) {
+            // 绝不影响连接：注册失败最多是联动不可用
+            ChatMessageStore.debugLog("[e33chat] channel decision at configuration " + phase + " failed | " + t);
         }
     }
 
@@ -244,52 +336,132 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
     }
 
     /**
+     * 我们为「服务器联动」注册的全部 play 阶段通道：引用同步、消息元数据、入服历史回填、
+     * 配置下发（V1/V2）、服务器配置界面、服务器图床（上传回执 / 分块下载）、图床能力。
+     *
+     * <p>顺序 = 注册顺序，注销时按同一张表来，方便日志对照。注意 {@code MediaClient} 的两个
+     * 通道是在它自己的 {@code registerReceivers()} 里注册的，但 id 归这里统一管 ——
+     * 注销必须能覆盖到它们，否则图床通道会残留（同样会被 Paper 踢）。
+     */
+    private static java.util.List<Identifier> channelIds() {
+        return java.util.List.of(
+            ChatMetaPayload.ID.id(),
+            HistoryPayload.ID.id(),
+            ConfigSyncPayload.ID.id(),
+            ConfigSyncV2Payload.ID.id(),
+            ServerConfigScreenPayload.ID.id(),
+            MediaUploadAckPayload.ID.id(),
+            MediaResponsePayload.ID.id(),
+            MediaCapPayload.ID.id());
+    }
+
+    /** 本连接当前是否注册着我们的接收器。 */
+    private static synchronized boolean channelsActive() {
+        return !activeChannelIds.isEmpty();
+    }
+
+    /**
      * 注册「服务器联动」用的自定义载荷接收器（引用同步、服务器配置界面、服务器图床、
      * 入服历史回填、消息元数据、配置下发）。
      *
      * <p>Fabric 会把 {@code ClientPlayNetworking.getGlobalReceivers()}（即这里注册的集合）
-     * 在**配置阶段**声明给服务器；Paper 这类严格校验自定义载荷的服务端会直接以
+     * 声明给服务器：对 Fabric 服务端是配置阶段收到 {@code c:register} 后回一份 PLAY 相位的
+     * {@code c:register}；对 Paper/vanilla 是 PLAY 阶段刚拿到 GameJoin 时发一条
+     * {@code minecraft:register}。Paper 这类严格校验自定义载荷的服务端会直接以
      * "Invalid custom payload" 踢人。客户端在配置阶段无法得知服务端装了什么模组，因此
      * 默认只在**集成服务器**（单机 / 自己是局域网主机）启动时注册，以及连**局域网/私有
      * 网段地址**（见 {@link #isLocalAddress(String)}）时在配置阶段直接注册；连公网远程
-     * 服务器要启用联动时，按服务器地址白名单（自动维护）放行。重复调用无副作用。
+     * 服务器要启用联动时，按服务器地址白名单（自动维护）放行。
+     *
+     * <p><b>幂等</b>：本次连接已经注册过就直接返回；注册失败会回滚（把已登记的 id 全部注销），
+     * 绝不让半套接收器留下来。
      */
     private static synchronized void registerCustomChannels() {
-        if (customChannelsRegistered) return;
-        customChannelsRegistered = true;
-        ClientPlayNetworking.registerGlobalReceiver(ChatMetaPayload.ID, (payload, context) -> {
-            // 版本不一致/截断时解码器返回占位载荷（senderUUID=null）：整条忽略，只记诊断日志。
-            // 绝不能让半解码的 meta 进 store（会 NPE 或把引用块贴到错的气泡上）。
-            if (!payload.isValid()) {
-                ChatMessageStore.debugLog("[e33chat] chat_meta ignored | undecodable payload (version mismatch?)");
-                return;
+        if (!activeChannelIds.isEmpty()) return;
+        // 先登记 id 再逐个注册：万一中途某个 registerGlobalReceiver 抛异常，注销路径也能
+        // 把我们登记过的 id 全部清干净（unregisterGlobalReceiver 对没注册过的 id 只是返回 null）。
+        activeChannelIds.addAll(channelIds());
+        try {
+            ClientPlayNetworking.registerGlobalReceiver(ChatMetaPayload.ID, (payload, context) -> {
+                // 版本不一致/截断时解码器返回占位载荷（senderUUID=null）：整条忽略，只记诊断日志。
+                // 绝不能让半解码的 meta 进 store（会 NPE 或把引用块贴到错的气泡上）。
+                if (!payload.isValid()) {
+                    ChatMessageStore.debugLog("[e33chat] chat_meta ignored | undecodable payload (version mismatch?)");
+                    return;
+                }
+                context.client().execute(() -> ChatMessageStore.applyChatMeta(
+                    payload.senderUUID(), payload.senderName(), payload.messageHash(),
+                    payload.quoteSender(), payload.quoteContent(), payload.mentionTargets(),
+                    payload.quotedHash()));
+            });
+            ClientPlayNetworking.registerGlobalReceiver(HistoryPayload.ID, (payload, context) -> {
+                context.client().execute(() -> ChatMessageStore.addHistoryMessages(payload.entries()));
+            });
+            ClientPlayNetworking.registerGlobalReceiver(ConfigSyncPayload.ID, (payload, context) -> {
+                context.client().execute(() -> ConfigSyncPayload.handle(payload));
+            });
+            ClientPlayNetworking.registerGlobalReceiver(ConfigSyncV2Payload.ID, (payload, context) -> {
+                context.client().execute(() -> ConfigSyncV2Payload.handle(payload));
+            });
+            // Server-config GUI: opened on the client only (server never loads the Screen)
+            ClientPlayNetworking.registerGlobalReceiver(ServerConfigScreenPayload.ID, (payload, context) -> {
+                context.client().execute(() -> MinecraftClient.getInstance().setScreen(new ServerConfigScreen(
+                    MinecraftClient.getInstance().currentScreen,
+                    payload.useTpa(), payload.historyEnabled(), payload.templateDebug(),
+                    payload.mediaEnabled(), payload.mediaAutoClean(),
+                    payload.chatTemplates(), payload.whisperTemplates())));
+            });
+            com.niuqu.chatbubble.image.MediaClient.registerReceivers();
+            ClientPlayNetworking.registerGlobalReceiver(MediaCapPayload.ID, (payload, context) -> {
+                context.client().execute(() -> MediaCapPayload.handle(payload));
+            });
+            ChatMessageStore.debugLog("[e33chat] channels registered for this connection | count="
+                + activeChannelIds.size());
+        } catch (Throwable t) {
+            ChatMessageStore.debugLog("[e33chat] channel registration failed, rolling back | " + t);
+            unregisterCustomChannels("registration failed");
+        }
+    }
+
+    /**
+     * 注销我们注册过的全部接收器并清空登记表。**幂等**：没有登记过就直接返回（重复调用、
+     * 对已注销的连接再调一次都不会抛异常）；单个 id 注销失败只记日志，继续处理其余 id。
+     *
+     * <p>每次调用都是一条 {@code debugLog}，方便排查「连 Paper 时通道到底有没有残留」。
+     */
+    private static synchronized void unregisterCustomChannels(String reason) {
+        if (activeChannelIds.isEmpty()) {
+            ChatMessageStore.debugLog("[e33chat] channels unregistered | reason=" + reason + " | none registered");
+            return;
+        }
+        int requested = activeChannelIds.size();
+        int removed = 0;
+        for (Identifier id : activeChannelIds) {
+            try {
+                if (ClientPlayNetworking.unregisterGlobalReceiver(id) != null) removed++;
+            } catch (Throwable t) {
+                ChatMessageStore.debugLog("[e33chat] channel unregister failed | id=" + id + " | " + t);
             }
-            context.client().execute(() -> ChatMessageStore.applyChatMeta(
-                payload.senderUUID(), payload.senderName(), payload.messageHash(),
-                payload.quoteSender(), payload.quoteContent(), payload.mentionTargets(),
-                payload.quotedHash()));
-        });
-        ClientPlayNetworking.registerGlobalReceiver(HistoryPayload.ID, (payload, context) -> {
-            context.client().execute(() -> ChatMessageStore.addHistoryMessages(payload.entries()));
-        });
-        ClientPlayNetworking.registerGlobalReceiver(ConfigSyncPayload.ID, (payload, context) -> {
-            context.client().execute(() -> ConfigSyncPayload.handle(payload));
-        });
-        ClientPlayNetworking.registerGlobalReceiver(ConfigSyncV2Payload.ID, (payload, context) -> {
-            context.client().execute(() -> ConfigSyncV2Payload.handle(payload));
-        });
-        // Server-config GUI: opened on the client only (server never loads the Screen)
-        ClientPlayNetworking.registerGlobalReceiver(ServerConfigScreenPayload.ID, (payload, context) -> {
-            context.client().execute(() -> MinecraftClient.getInstance().setScreen(new ServerConfigScreen(
-                MinecraftClient.getInstance().currentScreen,
-                payload.useTpa(), payload.historyEnabled(), payload.templateDebug(),
-                payload.mediaEnabled(), payload.mediaAutoClean(),
-                payload.chatTemplates(), payload.whisperTemplates())));
-        });
-        com.niuqu.chatbubble.image.MediaClient.registerReceivers();
-        ClientPlayNetworking.registerGlobalReceiver(MediaCapPayload.ID, (payload, context) -> {
-            context.client().execute(() -> MediaCapPayload.handle(payload));
-        });
+        }
+        activeChannelIds.clear();
+        ChatMessageStore.debugLog("[e33chat] channels unregistered | reason=" + reason
+            + " | count=" + requested + " | removed=" + removed);
+    }
+
+    /**
+     * 退世界后的兜底清理：{@code ClientPlayConnectionEvents.DISCONNECT} 由 Fabric 的
+     * {@code ConnectionMixin} 注入到 {@code ClientConnection.channelInactive} /
+     * {@code handleDisconnection}，单机退世界要等本地连接真的关闭才会到（异步）。万一没到，
+     * 这里在「进过世界、世界已经没了、也没有正在进行的连接」时补一刀。
+     *
+     * <p>空闲时每帧只做一次空集合判断，开销可忽略。
+     */
+    private static synchronized void cleanupChannelsAfterWorldExit(MinecraftClient client) {
+        if (activeChannelIds.isEmpty()) return;
+        if (connectionPending || !playSessionSeen) return;   // 正在连接 / 还没进过世界
+        if (client.world != null || client.getNetworkHandler() != null) return;  // 还在世界里
+        playSessionSeen = false;
+        unregisterCustomChannels("left world (tick fallback)");
     }
 
     /** Logs when the client (main) thread stops ticking — the symptom behind
@@ -381,45 +553,58 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
             config = ConfigManager.load(configPath);
         }
 
-        // Custom payload channels are what the server-interop features need, but Fabric
-        // announces the client's channel set to the server during the configuration phase,
-        // and strict servers (Paper) reject that announcement and kick the client
-        // ("Invalid custom payload"). The client cannot know the server's mods that early,
-        // so by default we announce only where it is both useful and safe: the integrated
-        // server (single player / LAN), registered when that server starts.
-        //   config/e33chat/custom-channels.flag    -> also announce to remote servers
-        //                                             (needed when the server runs E33Chat)
-        //   config/e33chat/no-custom-channels.flag -> never announce
+        // 自定义载荷通道 = 服务端联动功能的前提，但 Fabric 会把「客户端能收哪些通道」的声明
+        // 发给服务端（Fabric 服：配置阶段收到 c:register 后回一份 PLAY 相位的 c:register；
+        // Paper/vanilla：PLAY 阶段刚拿到 GameJoin 时发 minecraft:register）。Paper 这类严格
+        // 校验的服务端会直接以 "Invalid custom payload" 踢人，而客户端在配置阶段无法得知
+        // 服务端装了什么模组，所以只在「有用且安全」的目标上声明：集成服务器（单机 / 自己是
+        // 局域网主机）以及白名单里的远程服务器。
+        //   config/e33chat/no-custom-channels.flag -> 任何情况下都不声明（硬关）
+        //
+        // 关键：声明集合是**进程级全局的**（ClientPlayNetworking.getGlobalReceivers()），所以
+        // 必须在每个连接边界先把自己注册的东西全部注销，否则单机/LAN 注册过的接收器会残留到
+        // 之后的 Paper 连接里 → 被踢。下面三个钩子配合完成「按连接」的生命周期：
+        //   START   : 先无条件注销，再按本次目标决定是否注册（幂等）
+        //   DISCONNECT（PLAY）: 注销
+        //   帧兜底  : 单机退世界时 DISCONNECT 是异步的，没等到就在这里补注销
         boolean forceOff = flagFileExists(NO_CUSTOM_CHANNELS_FLAG);
         if (forceOff) {
             com.mojang.logging.LogUtils.getLogger().info(
                 "[e33chat] custom payload channels: OFF (no-custom-channels.flag)");
         } else {
-            // 单机 / 局域网：集成服务器启动即注册，联动功能全保留。
-            net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTING
-                .register(server -> registerCustomChannels());
-            // 远程：只对「已记住的、确认装了 E33Chat 的服务器」注册（按服务器地址记忆，
-            // 见下面的 JOIN 钩子）。这样绝不会因为某个服务器而被永久打开，也就不会
-            // 在之后的其它服务器上重复引发 "Invalid custom payload" 踢人。
-            net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationConnectionEvents.START
+            // 进入配置阶段的第一时刻（配置网络处理器刚构造完，**早于任何配置包**）：远程连接先把
+            // 上一次连接残留的接收器清掉，并立刻按白名单做决定。这是「连 Paper 时不存在任何我们
+            // 的接收器」的第一道保险 —— 它不依赖服务端是否发包，因此比 START 更早、更确定。
+            // 单机/LAN 必须放过：SERVER_STARTING 的注册早于这里（集成服务器先启动再连接），
+            // 清了会把单机联动自己关掉（config START 会再补回来，但没必要先砸一次）。
+            net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationConnectionEvents.INIT
                 .register((handler, client) -> {
-                    String addr = currentServerAddress(client);
-                    if (addr == null) return;   // 集成服务器：SERVER_STARTING 已注册
-                    // 局域网/私有网段 = 玩家自己的房间：等同单机待遇，配置阶段就注册，
-                    // 不再依赖白名单（否则别人的局域网房间要「第二次进房」才有 interop）。
-                    boolean local = isLocalAddress(addr);
-                    boolean remembered = rememberedServers().contains(addr);
-                    if (local || remembered) registerCustomChannels();
-                    com.mojang.logging.LogUtils.getLogger().info(
-                        "[e33chat] custom payload channels | local={} | remote={} | addr='{}' | channels={}",
-                        local ? "on" : "off",
-                        remembered ? "whitelist" : "not-whitelisted",
-                        addr,
-                        customChannelsRegistered ? "on" : "off");
+                    try {
+                        connectionPending = true;
+                        if (client.getServer() == null) {
+                            decideConfigurationChannels(handler, client, "init");
+                        }
+                    } catch (Throwable t) {
+                        ChatMessageStore.debugLog("[e33chat] channel cleanup at configuration init failed | " + t);
+                    }
                 });
+            // 单机 / 局域网：集成服务器启动即注册，联动功能全保留（同一个 JVM，配置阶段就生效）。
+            net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents.SERVER_STARTING
+                .register(server -> {
+                    connectionPending = true;
+                    registerCustomChannels();
+                });
+            // 配置阶段 START：**先无条件注销**（幂等，重复注销不抛异常），再决定本连接是否注册。
+            // 时序（已按 Fabric API 5.1.6 字节码核实）：START 由配置阶段的 minecraft:brand
+            // 或 c:version 触发，而本模组的通道申报包只在收到服务端 c:register 时由
+            // ClientConfigurationNetworkAddon.receiveRegistration 里的
+            // sendInitialChannelRegistrationPacket() 发出 —— 服务端先发 version 再发 register
+            // （CommonPacketsImpl.init 里两个 Task 的注册顺序），所以 START 的决定一定早于申报。
+            net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationConnectionEvents.START
+                .register((handler, client) -> decideConfigurationChannels(handler, client, "start"));
             com.mojang.logging.LogUtils.getLogger().info(
                 "[e33chat] custom payload channels | single player/LAN=on | "
-                + "remote=only for remembered E33Chat servers");
+                + "remote=only for remembered E33Chat servers | per-connection registration");
         }
 
         // 服务器也装了 E33Chat 时会为我们的 C2S 通道注册接收器，canSend() 因此为 true。
@@ -430,6 +615,29 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                 // 连接边界：探测结果与「私聊提示已经出过」的去重表都重新开始
                 // （换服 / 重连后要重新判断，提示也重新计一次）。
                 resetConnectionState();
+                // 已经落地成 PLAY：连接不再「pending」，并且本机确实进过世界（帧兜底用）。
+                // 注意 Fabric 是在 onServerReady() 里先发 JOIN、再发 minecraft:register 的，
+                // 所以这里（以及 START 里的决定）一定早于通道声明被组装。
+                connectionPending = false;
+                playSessionSeen = true;
+                // 硬保证（第一道兜底）：到了 PLAY 就能拿到真实地址了。如果这次其实是**未白名单的
+                // 远程服务器**（说明配置阶段那个「是不是集成服务器」的判断被极端情况骗了），立刻
+                // 把残留注销——Fabric 是「先发 JOIN、再组装 minecraft:register」，所以这里还来得及。
+                try {
+                    String joinAddr = currentServerAddress(client);
+                    // 集成服务器（单机 / 自己是局域网主机）永远不按地址注销：它的 serverInfo
+                    // 不是「远程服务器地址」语义，拿去比对远程白名单只会误杀单机联动。
+                    boolean joinIntegrated = client.getServer() != null;
+                    if (!joinIntegrated
+                        && joinAddr != null
+                        && !isLocalAddress(joinAddr)
+                        && !rememberedServers().contains(joinAddr)
+                        && channelsActive()) {
+                        unregisterCustomChannels("play join (remote server not whitelisted)");
+                    }
+                } catch (Throwable t) {
+                    ChatMessageStore.debugLog("[e33chat] channel cleanup at join failed | " + t);
+                }
                 try {
                     String addr = currentServerAddress(client);
                     // 「服务端是否也装了本模组」：集成服务器（单机 / 自己是局域网主机）跑的
@@ -437,12 +645,18 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                     // 才会为 QuoteSyncPayload 注册接收器）。该探测与「是否声明通道」
                     // （forceOff / 白名单）无关，所以必须放在 forceOff 早退之前 —— 否则开着
                     // forceOff 的玩家永远拿不到结果，私聊提示也就永远不出现。
-                    boolean integrated = addr == null;
+                    boolean integrated = client.getServer() != null;
                     boolean serverHasE33 = integrated
                         || net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking.canSend(
                             com.niuqu.chatbubble.network.QuoteSyncPayload.ID);
                     serverModState = serverHasE33 ? ServerModState.PRESENT : ServerModState.ABSENT;
                     if (integrated) return;   // 单机 / 自己是局域网主机：集成服务器那条路径
+                    // 远程但地址拿不到（理论上不该发生：PLAY 阶段 handler 必有 serverInfo）：
+                    // 无法比对白名单 → 既不记住也不遗忘，保持现状（安全默认，不写 "null" 进文件）。
+                    if (addr == null) {
+                        ChatMessageStore.debugLog("[e33chat] join: remote address unknown, whitelist untouched");
+                        return;
+                    }
                     if (forceOff) return;
                     // 局域网/私有网段在配置阶段就已注册（见 START 钩子），这里只需复查
                     // 「服务器是否真的装了 E33Chat」并维护白名单，不再是首次生效的分界点。
@@ -475,9 +689,36 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                 }
             });
 
-        // 断开（回主菜单 / 换服）时清掉连接级状态：探测结果作废、私聊提示去重表清空。
+        // 断开（回主菜单 / 换服 / 退出单机世界）时：
+        //   ① 注销本次连接注册的接收器 —— 否则会残留到下一次连接；连 Paper 时这些通道会被
+        //      塞进声明里，正是 "Invalid custom payload" 踢人的来源。
+        //   ② 清掉连接级状态：探测结果作废、私聊提示去重表清空。
         net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents.DISCONNECT.register(
-            (handler, client) -> resetConnectionState());
+            (handler, client) -> {
+                try {
+                    unregisterCustomChannels("play disconnect");
+                } catch (Throwable t) {
+                    ChatMessageStore.debugLog("[e33chat] channel cleanup at disconnect failed | " + t);
+                } finally {
+                    connectionPending = false;
+                    playSessionSeen = false;
+                    resetConnectionState();
+                }
+            });
+
+        // 配置阶段连接失败（被拒 / 握手失败）：同样要清干净，否则为这次连接注册的通道会留到
+        // 下一个服务端。（成功的配置→PLAY 切换不会触发这个事件，只会触发上面的 PLAY 事件。）
+        net.fabricmc.fabric.api.client.networking.v1.ClientConfigurationConnectionEvents.DISCONNECT
+            .register((handler, client) -> {
+                try {
+                    unregisterCustomChannels("configuration disconnect");
+                } catch (Throwable t) {
+                    ChatMessageStore.debugLog("[e33chat] channel cleanup at configuration disconnect failed | " + t);
+                } finally {
+                    connectionPending = false;
+                    playSessionSeen = false;
+                }
+            });
 
         startStallWatchdog();
 
@@ -491,6 +732,8 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             lastTickMs = System.currentTimeMillis();
+            // 退世界兜底：DISCONNECT 要等本地连接真正关闭（异步），没等到就在这里注销。
+            cleanupChannelsAfterWorldExit(client);
             ImageLoader.tick();
             // 纹理全部走 drawTexture(Identifier) 懒加载（getTexture 自动 new ResourceTexture），F3+T 重载后自动重读资源包新 PNG
             if (!config.enabled()) return;
