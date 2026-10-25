@@ -116,6 +116,11 @@
   - 公屏免打扰时不弹出；跟随 `F1` 隐藏
 - **在线人数状态行**：侧边栏底部显示绿色 `【在线N人】`（含自己，与 TAB 口径一致）/ `【单人游戏中】`
 - **玩家列表在线状态**：头像右下角小圆点（在线绿 / 离线灰）
+- **灵动岛 × DangoMusic 联动**（可选）
+  - 与 **DangoMusic（3D 歌词音乐模组）** 同时安装时，顶部灵动岛显示「封面 + 曲名 + 艺术家 + 进度条与时间」
+  - **播放中常驻**、**暂停约 1.5 秒后淡出**（与 @ 通知横幅同一动画时长）
+  - 可在 **设置 → 「横幅」分组 → 「灵动岛显示音乐」** 关闭（默认开）
+  - **未装 DangoMusic 时行为完全不变**；不为其自带的灵动岛让位（如需可关闭 DangoMusic 自带的岛）
 
 ### 兼容与稳定性
 
@@ -193,6 +198,7 @@ java.lang.IllegalStateException: Cannot register channel. Too many channel regis
 | `publicOverlayIdleSeconds` | 小窗静默淡出秒数（1~60） |
 | `redDotEnabled` | 左下角聊天图标红点 |
 | `mentionBannerEnabled` / `systemBannerEnabled` | 灵动岛横幅开关 |
+| `musicIslandEnabled` | 灵动岛显示音乐（需装 DangoMusic，默认开） |
 
 ---
 
