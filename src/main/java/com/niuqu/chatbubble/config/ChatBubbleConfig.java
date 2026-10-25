@@ -105,7 +105,13 @@ public record ChatBubbleConfig(
     Integer channelDietLimit,
     // GUI 里被勾掉（禁用）的命名空间：这些命名空间下的通道一条都不声明。
     // 存小写命名空间；e33chat 不允许出现在这里（自己永远保留）。null → 空表。
-    List<String> channelDietDisabledNamespaces
+    List<String> channelDietDisabledNamespaces,
+    // 灵动岛 × DangoMusic 联动：装了 DangoMusic 时，顶部胶囊显示曲名/艺术家/封面/进度，
+    // 播放中常驻、暂停后按原版 150ms 淡出。可空 Boolean —— 旧配置文件缺键读成 null，
+    // 由 ConfigManager.mergeWithDefaults 收敛成 true（缺键=true）；运行时读
+    // {@link #musicIslandEnabledResolved()}。没装 DangoMusic 时该项没有任何效果。
+    @SerializedName("music_island_enabled")
+    Boolean musicIslandEnabled
 ) {
     /** 公屏小窗静默秒数（后续在 {@link #publicOverlayIdleSeconds()}）的默认值与合法范围：
      *  配置屏的输入框范围、旧配置缺键的回落值、运行时的夹取都用这三个常量，避免三处漂移。 */
@@ -139,7 +145,9 @@ public record ChatBubbleConfig(
             // 遗留模式键（不参与逻辑，按历史默认值 off 写出）/ 上限 120 / 禁用名单空表
             ChannelDietFilter.MODE_OFF,
             ChannelDietFilter.LIMIT_DEFAULT,
-            List.of()
+            List.of(),
+            // DangoMusic 联动默认开启（没装 DangoMusic 时该项无任何效果）
+            true
         );
     }
 
@@ -167,7 +175,8 @@ public record ChatBubbleConfig(
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
             channelDietEnabled,
-            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
+            this.musicIslandEnabled());
     }
 
     public ChatBubbleConfig withQuickChatPhrases(List<String> phrases) {
@@ -183,7 +192,8 @@ public record ChatBubbleConfig(
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
             channelDietEnabled,
-            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
+            this.musicIslandEnabled());
     }
 
     public ChatBubbleConfig withSidebarHidePatterns(List<String> patterns) {
@@ -199,7 +209,8 @@ public record ChatBubbleConfig(
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
             channelDietEnabled,
-            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
+            this.musicIslandEnabled());
     }
 
     public ChatBubbleConfig withBlockedPlayers(List<String> blocked) {
@@ -215,7 +226,8 @@ public record ChatBubbleConfig(
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
             channelDietEnabled,
-            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
+            this.musicIslandEnabled());
     }
 
     public ChatBubbleConfig withThemeValues(String theme, String themeAccent, Map<String, String> themeCustom) {
@@ -231,7 +243,8 @@ public record ChatBubbleConfig(
             publicOverlayIdleSeconds,
             dndWhisperPlayers,
             channelDietEnabled,
-            channelDietMode, channelDietLimit, channelDietDisabledNamespaces);
+            channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
+            this.musicIslandEnabled());
     }
 
     /** 免打扰开关（标题栏月亮按钮写入，重启后保留）。
@@ -250,7 +263,8 @@ public record ChatBubbleConfig(
             this.publicOverlayIdleSeconds(),
             this.dndWhisperPlayers(),
             this.channelDietEnabled(),
-            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces());
+            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces(),
+            this.musicIslandEnabled());
     }
 
     /** 私聊免打扰名单整体替换（null → 空表）。名单里存玩家名，逐个私聊独立生效。 */
@@ -267,7 +281,8 @@ public record ChatBubbleConfig(
             this.publicOverlayIdleSeconds(),
             normalizeWhisperDnd(players),
             this.channelDietEnabled(),
-            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces());
+            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces(),
+            this.musicIslandEnabled());
     }
 
     /** 通道节食总开关（实验性，默认关闭）。关闭 = 只统计不裁剪（发送时原样放行）；
@@ -287,7 +302,8 @@ public record ChatBubbleConfig(
             this.publicOverlayIdleSeconds(),
             this.dndWhisperPlayers(),
             enabled,
-            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces());
+            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces(),
+            this.musicIslandEnabled());
     }
 
     /** 整体替换「被禁用的命名空间」名单（清洗规则见
@@ -306,7 +322,8 @@ public record ChatBubbleConfig(
             this.dndWhisperPlayers(),
             this.channelDietEnabled(),
             this.channelDietMode(), this.channelDietLimit(),
-            ChannelDietFilter.normalizeNamespaces(namespaces));
+            ChannelDietFilter.normalizeNamespaces(namespaces),
+            this.musicIslandEnabled());
     }
 
     /** 设置通道上限（夹到 32~127，Paper 的硬上限是 127 条）。 */
@@ -323,7 +340,14 @@ public record ChatBubbleConfig(
             this.publicOverlayIdleSeconds(),
             this.dndWhisperPlayers(),
             this.channelDietEnabled(),
-            this.channelDietMode(), ChannelDietFilter.clampLimit(limit), this.channelDietDisabledNamespaces());
+            this.channelDietMode(), ChannelDietFilter.clampLimit(limit), this.channelDietDisabledNamespaces(),
+            this.musicIslandEnabled());
+    }
+
+    /** 生效的「灵动岛 × DangoMusic」开关（旧配置缺键 → null → 默认开启）。
+     *  实际是否显示还取决于有没有装 DangoMusic、以及当前有没有曲目。 */
+    public boolean musicIslandEnabledResolved() {
+        return musicIslandEnabled == null || musicIslandEnabled;
     }
 
     /** 生效的通道上限（32~127，默认 120）。 */

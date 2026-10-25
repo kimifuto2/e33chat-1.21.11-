@@ -112,7 +112,10 @@ public final class ConfigManager {
                 c.channelDietLimit() != null ? c.channelDietLimit() : d.channelDietLimit()),
             ChannelDietFilter.normalizeNamespaces(
                 c.channelDietDisabledNamespaces() != null
-                    ? c.channelDietDisabledNamespaces() : d.channelDietDisabledNamespaces()));
+                    ? c.channelDietDisabledNamespaces() : d.channelDietDisabledNamespaces()),
+            // DangoMusic 灵动岛联动：旧配置文件没有这个键 → null → 回落默认（开启）；
+            // 用户显式写 false 才关闭（没装 DangoMusic 时该项本来就不产生影响）
+            c.musicIslandEnabled() != null ? c.musicIslandEnabled() : d.musicIslandEnabled());
     }
 
     /** 公屏小窗静默秒数夹到声明的 1~60 秒范围（null → 默认值）。 */
