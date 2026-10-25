@@ -1,0 +1,40 @@
+plugins {
+    id 'java'
+}
+
+group = 'com.niuqu.chatbubble'
+version = '3.0.1'
+
+repositories {
+    // 本机能直连的 Central 镜像（本环境下 repo.maven.apache.org 走代理也慢，见 ../project/settings.gradle 的同类备注）
+    maven { url = 'https://maven.aliyun.com/repository/central' }
+    // paper-api 及其依赖（com.mojang:brigadier、net.md-5:bungeecord-chat 等只在这里全）
+    maven { url = 'https://repo.papermc.io/repository/maven-public/' }
+    mavenCentral()
+}
+
+dependencies {
+    // 只编译期需要：运行时由 Paper 服务端提供（不要打进 jar）
+    compileOnly 'io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+}
+
+tasks.jar {
+    archiveBaseName = 'E33ChatPaper'
+    archiveVersion = project.version
+    manifest {
+        attributes(
+            'Implementation-Title': 'E33ChatPaper',
+            'Implementation-Version': project.version
+        )
+    }
+}

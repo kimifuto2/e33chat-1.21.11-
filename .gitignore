@@ -41,3 +41,6 @@ replay_*.log
 
 # test env logs
 logs/
+
+paper-plugin/build/
+paper-plugin/.gradle/
