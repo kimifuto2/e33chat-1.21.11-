@@ -5,6 +5,7 @@ import com.niuqu.chatbubble.render.Animation;
 import com.niuqu.chatbubble.render.AnimationStyle;
 import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
+import com.niuqu.chatbubble.compat.DangoMusicCompat;
 import com.niuqu.chatbubble.compat.JadeCompat;
 import com.niuqu.chatbubble.store.ChatMessageStore;
 import com.niuqu.chatbubble.render.RoundRectRenderer;
@@ -122,6 +123,8 @@ public class MentionNotificationBanner {
 
     public void tick() {
         long now = System.currentTimeMillis();
+        // DangoMusic 联动：每帧喂一次音乐岛（没装 DangoMusic 时 poll() 恒 null，无副作用）
+        MusicIslandBanner.INSTANCE.tick(DangoMusicCompat.poll());
         updateJadeShift(now);
 
         // Natural expiry: snapshot every current position, remove expired banners,
@@ -166,10 +169,16 @@ public class MentionNotificationBanner {
     }
 
     public void render(UiCanvas g, int screenW, int screenH) {
-        if (!ChatBubbleClientSetup.config().mentionBannerEnabled()) return;
+        // 关掉 @ 横幅不应连带关掉音乐岛：两者任一需要画就继续往下走
+        if (!ChatBubbleClientSetup.config().mentionBannerEnabled() && !MusicIslandBanner.INSTANCE.visible()) return;
         // 到期/退出清除：HUD 层每帧 tick，但屏内路径(renderBannerForScreen)不走 HUD tick，
         // 所以在渲染开头先 tick 一次，保证横幅在任意渲染路径都会按时自动隐藏。
         this.tick();
+        // 绘制顺序：先画上方的音乐岛，再画 @ 横幅（横幅的顶部 Y 由 stackShift() 让位）
+        if (MusicIslandBanner.INSTANCE.visible()) {
+            MusicIslandBanner.INSTANCE.render(g, screenW, screenH);
+        }
+        if (!ChatBubbleClientSetup.config().mentionBannerEnabled()) return;
         if (banners.isEmpty() && exiting.isEmpty()) return;
 
         Minecraft mc = Minecraft.getInstance();
@@ -275,9 +284,17 @@ public class MentionNotificationBanner {
         if (Math.abs(target - jadeShift) < 0.5f) jadeShift = target;
     }
 
-    /** 横幅叠顶部 Y：用户配置的顶部偏移 + Jade 避让下压量。 */
+    /** 横幅叠顶部 Y：用户配置的顶部偏移 + Jade 避让下压量 + 音乐岛让位量。 */
     private float stackTopY() {
-        return ChatBubbleClientSetup.config().bannerOffsetY() + jadeShift;
+        float own = ChatBubbleClientSetup.config().bannerOffsetY() + jadeShift;
+        int shift = MusicIslandBanner.INSTANCE.stackShift();
+        if (shift <= 0) return own;
+        // 两个胶囊的 Jade 下压各自独立平滑（水平重叠判定用的半宽不同），所以不能只加
+        // 固定高度：取「本横幅自己的下压 + 让位量」与本岛真实底边的较大者，任何情况下都不重叠。
+        float islandBottom = ChatBubbleClientSetup.config().bannerOffsetY()
+            + MusicIslandBanner.INSTANCE.jadeShiftPx()
+            + MusicIslandBanner.INSTANCE.heightPx() + STACK_GAP;
+        return Math.max(own + shift, islandBottom);
     }
 
     private float targetY(int index, ActiveBanner b) {

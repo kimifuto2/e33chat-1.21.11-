@@ -122,6 +122,8 @@ public class ChatBubbleConfigScreen extends Screen {
     private int channelDietLimit = ChannelDietFilter.LIMIT_DEFAULT;
     /** 在「通道节食设置…」里被关掉的命名空间（这些命名空间下的通道一条都不声明）。 */
     private List<String> channelDietDisabledNamespaces = new ArrayList<>();
+    /** 灵动岛 × DangoMusic 联动开关（旧配置缺键 → 默认开启）。 */
+    private boolean musicIslandEnabled = true;
 
     // 打开时的快照——用于 changeCount / revertAll
     private ChatBubbleConfig snapshot;
@@ -243,7 +245,9 @@ public class ChatBubbleConfigScreen extends Screen {
             // channelDietMode 是 3.0.2 的遗留键，不再参与逻辑，原样带回磁盘上的值。
             channelDietEnabled,
             ChatBubbleClientSetup.config().channelDietMode(),
-            channelDietLimit, channelDietDisabledNamespaces));
+            channelDietLimit, channelDietDisabledNamespaces,
+            // 灵动岛 × DangoMusic 联动（缺键时 loadFromConfig 已收敛成默认开启）
+            musicIslandEnabled));
     }
 
     private void loadFromConfig() {
@@ -299,6 +303,8 @@ public class ChatBubbleConfigScreen extends Screen {
         channelDietEnabled = Boolean.TRUE.equals(cfg.channelDietEnabled());
         channelDietLimit = cfg.channelDietLimitResolved();
         channelDietDisabledNamespaces = new ArrayList<>(cfg.channelDietDisabledResolved());
+        // DangoMusic 联动：旧配置缺键 → null → 视为开启
+        musicIslandEnabled = cfg.musicIslandEnabledResolved();
         messageGap = cfg.messageGap() != null ? cfg.messageGap() : 6;
         avatarSize = cfg.avatarSize() != null ? cfg.avatarSize() : 20;
         bubbleSize = cfg.bubbleSize() != null ? cfg.bubbleSize() : 9;
@@ -525,6 +531,8 @@ public class ChatBubbleConfigScreen extends Screen {
             OptionDef.bool("e33chat.config.system_banner_enabled", Ref.b(() -> systemBannerEnabled, v -> systemBannerEnabled = v)),
             OptionDef.bool("e33chat.config.sound_system", Ref.b(() -> soundSystem, v -> soundSystem = v))),
         SectionDef.of("e33chat.config.section.banner",
+            // 灵动岛 × DangoMusic 联动：装了 DangoMusic 时顶部胶囊显示曲名/封面/进度
+            OptionDef.bool("e33chat.config.music_island_enabled", Ref.b(() -> musicIslandEnabled, v -> musicIslandEnabled = v)),
             OptionDef.intBox("e33chat.config.mention_banner_duration", Ref.i(() -> mentionBannerDuration, v -> mentionBannerDuration = v), 2, 10, 2),
             OptionDef.intBox("e33chat.config.banner_max_stack", Ref.i(() -> bannerMaxStack, v -> bannerMaxStack = v), 1, 5, 2),
             OptionDef.intBox("e33chat.config.banner_corner_radius", Ref.i(() -> bannerCornerRadius, v -> bannerCornerRadius = v), 0, 10, 2),
