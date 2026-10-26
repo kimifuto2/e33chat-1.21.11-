@@ -60,6 +60,9 @@ $env:JAVA_TOOL_OPTIONS = '-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7899 -Dhtt
 > 26.x 起版本坐标换了体系：`<mc>.build.<build>-<channel>`，**不再是** `1.21.11-R0.1-SNAPSHOT`；
 > 旧的 `api.papermc.io/v2` 对 26.x 已 sunset，查最新 build 用 `fill.papermc.io/v3`。
 
+> 版本线：26.2 / 26.3 两分支的业务代码与 1.21.11 版**零改动**，两个 jar 的 6 个 `.class` **逐字节相同**
+> （差异只在 `META-INF/MANIFEST.MF` 与 `paper-plugin.yml` 的 `api-version`）；验收日志见下方「安装与测试」第 2 步。
+
 > 判据只看输出里的 `BUILD SUCCESSFUL`。PowerShell 会把 JVM 的 `Picked up JAVA_TOOL_OPTIONS`
 > 当错误，退出码不可信；偶发毫秒级失败（daemon/锁竞争）隔 4 秒重试即可（最多 3 次）。
 
@@ -160,7 +163,7 @@ $env:JAVA_TOOL_OPTIONS = '-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7899 -Dhtt
 | 发了 `@名字` 但日志里完全没有 `mention broadcast` | ① 名字不在线/拼错；② `@` 后面紧跟的是空格；③ 该消息被别的插件取消（`ignoreCancelled` 直接跳过）；④ 服务端日志级别过滤掉了 INFO |
 | 日志有 `mention broadcast`，客户端却没提醒 | 客户端提醒是**扫正文**的：确认双方都装 E33Chat、客户端的横幅/音效开关开着，且正文里的 `@名字` 没被聊天插件改写（例如插入了 `§` 码或零宽字符） |
 | `quote_sync dropped \| ... IllegalArgumentException` | 客户端与本插件的协议不一致或包被截断；属预期丢弃，不会踢人 |
-| 客户端连上就被踢 `Invalid custom payload payload!` | 这是 Paper 对「客户端声明的自定义载荷」的校验（PaperMC/Paper#4201），与本插件无关；对策是客户端侧的通道白名单，或服务端 `-Dpaper.disableChannelLimit=true` |
+| 客户端连上就被踢 `Invalid custom payload payload!` | 这是 Paper 对「客户端声明的自定义载荷」的校验（PaperMC/Paper#4201），与本插件无关；对策是客户端侧的通道白名单，或服务端 `-Dpaper.disableChannelLimit=true`（Paper 默认通道上限 128、实际可用 127，大整合包必加） |
 | 引用块只在引用者自己那里显示 | 说明 `chat_meta` 没送达其他人：检查是否所有玩家都装了 E33Chat 客户端；`recipients=` 是否为在线人数 |
 
 ## 边界
