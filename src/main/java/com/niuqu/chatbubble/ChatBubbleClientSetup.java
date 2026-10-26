@@ -81,6 +81,19 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
     private static final java.util.Set<String> whisperUnavailableNotices =
         new java.util.LinkedHashSet<>();
 
+    // ── 群聊可用性探测 ────────────────────────────────────────────────────────
+    // JOIN 后判 ClientPlayNetworking.canSend(GroupCreatePayload.ID)：false = 服务端没装
+    // E33Chat，或装的是不支持群聊的旧版（没有注册群聊 C2S 接收器）。这时公屏插一条本地
+    // 系统提示（不走横幅、不计未读），**每次连接仅一次**。
+    // 为什么要等几个 tick 再判：服务端把自己的可收通道（minecraft:register）在玩家刚落地
+    // 时发出，客户端 JOIN 事件只比它早一两个 tick —— 立刻判会拿到假阴性。1 秒（20 tick）
+    // 足够，且玩家此时才刚进世界，来不及点「+」。
+    private static final int GROUP_SUPPORT_GRACE_TICKS = 20;
+    /** 本次连接是否还要探测群聊支持（JOIN 置 true，探测出结果后置 false）。 */
+    private static volatile boolean groupSupportPending;
+    /** JOIN 之后经过的 tick 数（只在 {@link #groupSupportPending} 时有意义）。 */
+    private static int groupSupportTicks;
+
     /** 服务端是否也装了本模组（联动功能可用）。**未探测时返回 false** —— 想判「服务端
      *  没装」必须走 {@link #claimWhisperUnavailableNotice(String)}（它还要求状态已确认为
      *  ABSENT），不要写成 {@code !serverHasE33Chat()}，否则首次入服会误报。 */
@@ -93,10 +106,42 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
         return serverModState != ServerModState.UNKNOWN;
     }
 
-    /** 连接边界（JOIN 开头 / DISCONNECT）重置：探测结果失效，私聊提示去重表清空。 */
+    /** 连接边界（JOIN 开头 / DISCONNECT）重置：探测结果失效，私聊提示去重表清空，
+     *  群聊探测重新开始（每条连接最多一条「服务端不支持群聊」提示）。 */
     private static synchronized void resetConnectionState() {
         serverModState = ServerModState.UNKNOWN;
         whisperUnavailableNotices.clear();
+        groupSupportPending = false;
+        groupSupportTicks = 0;
+    }
+
+    /** JOIN 后探测群聊支持（由 END_CLIENT_TICK 每 tick 调，自己在内部计数）。
+     *
+     *  <p>{@link com.niuqu.chatbubble.store.GroupStore#available()} 就是
+     *  {@code ClientPlayNetworking.canSend(GroupCreatePayload.ID)}：服务端只有在注册了群聊
+     *  C2S 接收器时才会把该通道宣告给客户端，所以 false 同时覆盖「没装服务端 E33Chat」与
+     *  「装的是不支持群聊的旧版」两种情况。
+     *
+     *  <p>单机 / 自己是局域网主机（集成服务器）跑的就是本 jar 的服务端入口，必然支持群聊，
+     *  直接跳过（配置阶段拿不到可靠的 canSend 结果）。
+     *  群聊开关在配置里关掉时也不提示 —— 那是用户自己的选择，不是服务端缺功能。 */
+    private static void pollGroupSupport(MinecraftClient client) {
+        if (!groupSupportPending) return;
+        if (client == null || client.player == null || client.world == null) return;
+        if (++groupSupportTicks < GROUP_SUPPORT_GRACE_TICKS) return;
+        groupSupportPending = false;          // 只提示一次：本连接不再探测
+        try {
+            boolean supported = client.getServer() != null
+                || com.niuqu.chatbubble.store.GroupStore.available();
+            if (supported) return;
+            if (!config().groupChatEnabledResolved()) return;
+            ChatMessageStore.addLocalNotice(
+                net.minecraft.text.Text.translatable("e33chat.group.unavailable"), null);
+            ChatMessageStore.debugLog(
+                "[e33chat] group support probe | server has no group channels -> notice shown");
+        } catch (Throwable t) {
+            ChatMessageStore.debugLog("[e33chat] group support probe failed | " + t);
+        }
     }
 
     /** 玩家名归一化：去掉 § 色码（§ 与其后紧跟的 1 个字符）、首尾空白，统一小写。 */
@@ -352,7 +397,16 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
             ServerConfigScreenPayload.ID.id(),
             MediaUploadAckPayload.ID.id(),
             MediaResponsePayload.ID.id(),
-            MediaCapPayload.ID.id());
+            MediaCapPayload.ID.id(),
+            // 群聊（S2C 四条）：群快照 / 消息转发 / 事件通知 / 进群邀请与回应回执。
+            // C2S 方向客户端不注册接收器。
+            com.niuqu.chatbubble.network.GroupSyncPayload.ID.id(),
+            com.niuqu.chatbubble.network.GroupMessageRelayPayload.ID.id(),
+            com.niuqu.chatbubble.network.GroupEventPayload.ID.id(),
+            com.niuqu.chatbubble.network.GroupInviteEventPayload.ID.id(),
+            // 玩家互动动作（S2C 一条）：服务端校验后按会话范围转发的动作消息。
+            // C2S（player_action）方向客户端不注册接收器。
+            com.niuqu.chatbubble.network.PlayerActionRelayPayload.ID.id());
     }
 
     /** 本连接当前是否注册着我们的接收器。 */
@@ -415,6 +469,57 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
             ClientPlayNetworking.registerGlobalReceiver(MediaCapPayload.ID, (payload, context) -> {
                 context.client().execute(() -> MediaCapPayload.handle(payload));
             });
+            // ── 群聊（方案 A：服务端中继）─────────────────────────────────────────
+            // 三条 S2C 都在客户端线程处理：GroupSync 覆盖群名/成员表，Relay 落成气泡，
+            // Event 处理「被拉群 / 被踢 / 解散 / 改名」。任何异常只记日志 —— 群聊坏掉
+            // 不能连累聊天本体。
+            ClientPlayNetworking.registerGlobalReceiver(
+                com.niuqu.chatbubble.network.GroupSyncPayload.ID, (payload, context) ->
+                    context.client().execute(() -> {
+                        try {
+                            com.niuqu.chatbubble.store.GroupStore.applySync(payload);
+                        } catch (Throwable t) {
+                            ChatMessageStore.debugLog("[e33chat] group_sync handler failed | " + t);
+                        }
+                    }));
+            ClientPlayNetworking.registerGlobalReceiver(
+                com.niuqu.chatbubble.network.GroupMessageRelayPayload.ID, (payload, context) ->
+                    context.client().execute(() -> {
+                        try {
+                            com.niuqu.chatbubble.store.GroupStore.receiveMessage(payload);
+                        } catch (Throwable t) {
+                            ChatMessageStore.debugLog("[e33chat] group_relay handler failed | " + t);
+                        }
+                    }));
+            ClientPlayNetworking.registerGlobalReceiver(
+                com.niuqu.chatbubble.network.GroupEventPayload.ID, (payload, context) ->
+                    context.client().execute(() -> {
+                        try {
+                            com.niuqu.chatbubble.store.GroupStore.applyEvent(payload);
+                        } catch (Throwable t) {
+                            ChatMessageStore.debugLog("[e33chat] group_event handler failed | " + t);
+                        }
+                    }));
+            // 第 4 轮：进群邀请（被邀请者）/ 接受·拒绝回执（创建者）
+            ClientPlayNetworking.registerGlobalReceiver(
+                com.niuqu.chatbubble.network.GroupInviteEventPayload.ID, (payload, context) ->
+                    context.client().execute(() -> {
+                        try {
+                            com.niuqu.chatbubble.store.GroupStore.applyInviteEvent(payload);
+                        } catch (Throwable t) {
+                            ChatMessageStore.debugLog("[e33chat] group_invite_event handler failed | " + t);
+                        }
+                    }));
+            // 玩家互动动作：按 scope 插进对应会话（公屏 / 群聊 / 私聊），系统信息样式一行。
+            ClientPlayNetworking.registerGlobalReceiver(
+                com.niuqu.chatbubble.network.PlayerActionRelayPayload.ID, (payload, context) ->
+                    context.client().execute(() -> {
+                        try {
+                            com.niuqu.chatbubble.chat.action.ActionMessages.receive(payload);
+                        } catch (Throwable t) {
+                            ChatMessageStore.debugLog("[e33chat] player_action_relay handler failed | " + t);
+                        }
+                    }));
             ChatMessageStore.debugLog("[e33chat] channels registered for this connection | count="
                 + activeChannelIds.size());
         } catch (Throwable t) {
@@ -581,6 +686,13 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                 .register((handler, client) -> {
                     try {
                         connectionPending = true;
+                        // 群聊状态按连接隔离：上一次连接的群快照/成员表在这里清掉，
+                        // 本次连接的服务端会在 JOIN 时用 GroupSync 重建（不在 JOIN 清，
+                        // 因为服务端的 JOIN 同步包**早于**客户端 JOIN 事件到达）。
+                        try {
+                            com.niuqu.chatbubble.store.GroupStore.clear("configuration init");
+                        } catch (Throwable ignored) {
+                        }
                         if (client.getServer() == null) {
                             decideConfigurationChannels(handler, client, "init");
                         }
@@ -615,6 +727,9 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                 // 连接边界：探测结果与「私聊提示已经出过」的去重表都重新开始
                 // （换服 / 重连后要重新判断，提示也重新计一次）。
                 resetConnectionState();
+                // 群聊可用性：本条连接重新开始探测（见 pollGroupSupport，每次连接最多一条提示）。
+                groupSupportPending = true;
+                groupSupportTicks = 0;
                 // 已经落地成 PLAY：连接不再「pending」，并且本机确实进过世界（帧兜底用）。
                 // 注意 Fabric 是在 onServerReady() 里先发 JOIN、再发 minecraft:register 的，
                 // 所以这里（以及 START 里的决定）一定早于通道声明被组装。
@@ -703,6 +818,10 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
                     connectionPending = false;
                     playSessionSeen = false;
                     resetConnectionState();
+                    try {
+                        com.niuqu.chatbubble.store.GroupStore.clear("play disconnect");
+                    } catch (Throwable ignored) {
+                    }
                 }
             });
 
@@ -737,6 +856,8 @@ public class ChatBubbleClientSetup implements ClientModInitializer {
             ImageLoader.tick();
             // 纹理全部走 drawTexture(Identifier) 懒加载（getTexture 自动 new ResourceTexture），F3+T 重载后自动重读资源包新 PNG
             if (!config.enabled()) return;
+            // 群聊可用性探测：JOIN 后 canSend(群聊 C2S) 为 false → 公屏一条本地系统提示（仅一次）
+            pollGroupSupport(client);
 
             String key;
             if (client.world == null || client.player == null) {

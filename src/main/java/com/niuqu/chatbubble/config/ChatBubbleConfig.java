@@ -111,7 +111,13 @@ public record ChatBubbleConfig(
     // 由 ConfigManager.mergeWithDefaults 收敛成 true（缺键=true）；运行时读
     // {@link #musicIslandEnabledResolved()}。没装 DangoMusic 时该项没有任何效果。
     @SerializedName("music_island_enabled")
-    Boolean musicIslandEnabled
+    Boolean musicIslandEnabled,
+    // 群聊总开关（方案 A：群消息全部走服务端中继）。默认开启。
+    // 关掉后：侧边栏搜索框右侧的「+」按钮变灰且点击只回一条提示，群聊会话行也不再显示；
+    // 已经在群里的消息仍会照常落到历史（服务端该发还是会发），只是界面上不展示入口。
+    // 可空 Boolean —— 旧配置文件缺键读成 null，由 ConfigManager.mergeWithDefaults 收敛成 true。
+    @SerializedName("group_chat_enabled")
+    Boolean groupChatEnabled
 ) {
     /** 公屏小窗静默秒数（后续在 {@link #publicOverlayIdleSeconds()}）的默认值与合法范围：
      *  配置屏的输入框范围、旧配置缺键的回落值、运行时的夹取都用这三个常量，避免三处漂移。 */
@@ -147,6 +153,8 @@ public record ChatBubbleConfig(
             ChannelDietFilter.LIMIT_DEFAULT,
             List.of(),
             // DangoMusic 联动默认开启（没装 DangoMusic 时该项无任何效果）
+            true,
+            // 群聊默认开启
             true
         );
     }
@@ -176,7 +184,7 @@ public record ChatBubbleConfig(
             dndWhisperPlayers,
             channelDietEnabled,
             channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     public ChatBubbleConfig withQuickChatPhrases(List<String> phrases) {
@@ -193,7 +201,7 @@ public record ChatBubbleConfig(
             dndWhisperPlayers,
             channelDietEnabled,
             channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     public ChatBubbleConfig withSidebarHidePatterns(List<String> patterns) {
@@ -210,7 +218,7 @@ public record ChatBubbleConfig(
             dndWhisperPlayers,
             channelDietEnabled,
             channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     public ChatBubbleConfig withBlockedPlayers(List<String> blocked) {
@@ -227,7 +235,7 @@ public record ChatBubbleConfig(
             dndWhisperPlayers,
             channelDietEnabled,
             channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     public ChatBubbleConfig withThemeValues(String theme, String themeAccent, Map<String, String> themeCustom) {
@@ -244,7 +252,7 @@ public record ChatBubbleConfig(
             dndWhisperPlayers,
             channelDietEnabled,
             channelDietMode, channelDietLimit, channelDietDisabledNamespaces,
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     /** 免打扰开关（标题栏月亮按钮写入，重启后保留）。
@@ -264,7 +272,7 @@ public record ChatBubbleConfig(
             this.dndWhisperPlayers(),
             this.channelDietEnabled(),
             this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces(),
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     /** 私聊免打扰名单整体替换（null → 空表）。名单里存玩家名，逐个私聊独立生效。 */
@@ -282,7 +290,7 @@ public record ChatBubbleConfig(
             normalizeWhisperDnd(players),
             this.channelDietEnabled(),
             this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces(),
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     /** 通道节食总开关（实验性，默认关闭）。关闭 = 只统计不裁剪（发送时原样放行）；
@@ -303,7 +311,7 @@ public record ChatBubbleConfig(
             this.dndWhisperPlayers(),
             enabled,
             this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces(),
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     /** 整体替换「被禁用的命名空间」名单（清洗规则见
@@ -323,7 +331,7 @@ public record ChatBubbleConfig(
             this.channelDietEnabled(),
             this.channelDietMode(), this.channelDietLimit(),
             ChannelDietFilter.normalizeNamespaces(namespaces),
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     /** 设置通道上限（夹到 32~127，Paper 的硬上限是 127 条）。 */
@@ -341,13 +349,37 @@ public record ChatBubbleConfig(
             this.dndWhisperPlayers(),
             this.channelDietEnabled(),
             this.channelDietMode(), ChannelDietFilter.clampLimit(limit), this.channelDietDisabledNamespaces(),
-            this.musicIslandEnabled());
+            this.musicIslandEnabled(), this.groupChatEnabled());
     }
 
     /** 生效的「灵动岛 × DangoMusic」开关（旧配置缺键 → null → 默认开启）。
      *  实际是否显示还取决于有没有装 DangoMusic、以及当前有没有曲目。 */
     public boolean musicIslandEnabledResolved() {
         return musicIslandEnabled == null || musicIslandEnabled;
+    }
+
+    /** 生效的群聊开关（旧配置缺键 → null → 默认开启）。
+     *  服务端是否真的支持群聊还要另看 {@code ClientPlayNetworking.canSend(group_create)}。 */
+    public boolean groupChatEnabledResolved() {
+        return groupChatEnabled == null || groupChatEnabled;
+    }
+
+    /** 设置群聊开关（配置屏写入）。 */
+    public ChatBubbleConfig withGroupChatEnabled(boolean enabled) {
+        return new ChatBubbleConfig(this.enabled(), this.theme(), this.themeAccent(), this.themeCustom(), this.redDotEnabled(), this.hideChatIcon(), this.animationEnabled(),
+            this.systemChatAsBubble(), this.antiSpam,
+            this.chatHistoryEnabled(), this.historyRetentionDays(), this.timeSeparatorMinutes(),
+            this.panelWidth(), this.bubbleCornerRadius(), this.ownBubbleColor(), this.otherBubbleColor(), this.ownTextColor(), this.otherTextColor(),
+            this.soundPublic(), this.soundSystem(), this.soundWhisper(), this.debugLog(), this.preserveInput(), this.colorCodes(), this.sidebarHidePatterns(), this.blockedPlayers(), this.quickChatPhrases(),
+            this.mentionBannerEnabled(), this.systemBannerEnabled(), this.mentionBannerDuration(), this.mentionSoundEnabled(), this.mentionRequireAt(), this.mentionWhisperBanner(),
+            this.blurEnabled(), this.panelOpacity(), this.soundVolume(), this.ownMentionNotify(), this.ownQuoteNotify(), this.ownWhisperNotify(), this.bannerCornerRadius(), this.bannerOffsetX(), this.bannerOffsetY(), this.bannerMaxStack(),
+            this.panelAnimStyle(), this.bannerAnimStyle(), this.popupAnimStyle(), this.messageAnimStyle(), this.imageRenderEnabled(), this.receiveImages(),
+            this.uploadUrl(), this.uploadField(), this.uploadExtra(), this.uploadResponse(), this.messageGap(), this.avatarSize(), this.hideRepeatedAvatars(), this.closeChatOnSend(), this.bannerOpacity(), this.bubbleSize(), this.dndEnabled(), this.publicOverlayEnabled(),
+            this.publicOverlayIdleSeconds(),
+            this.dndWhisperPlayers(),
+            this.channelDietEnabled(),
+            this.channelDietMode(), this.channelDietLimit(), this.channelDietDisabledNamespaces(),
+            this.musicIslandEnabled(), enabled);
     }
 
     /** 生效的通道上限（32~127，默认 120）。 */

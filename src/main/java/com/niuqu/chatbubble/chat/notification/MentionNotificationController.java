@@ -111,6 +111,32 @@ public class MentionNotificationController {
             NotificationType.SYSTEM, null);
     }
 
+    /**
+     * 群聊：收到别人的群消息 → 弹 {@link NotificationType#GROUP} 横幅。
+     *
+     * <p>横幅名字行 = 「[群聊] 群名 · 发送者」，内容 = 消息正文。自己发的群消息不弹
+     * （本地回显正在输入框上方，再弹一次是噪音）；引用/@ 也**不**额外走 MENTION 分支，
+     * 群聊里的 @ 语义与公屏不同（群成员少，每条都弹横幅已经足够）。
+     * 群聊横幅复用「@通知横幅」总开关，不额外占一个配置项。
+     */
+    public void onGroupMessage(UUID groupId, String groupName, UUID senderUUID,
+                               Text senderName, Text content) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.player == null) return;
+        if (!ChatBubbleClientSetup.config().mentionBannerEnabled()) return;
+        if (senderUUID != null && senderUUID.equals(mc.player.getUuid())) return;
+        String name = senderName == null ? "" : senderName.getString().replaceAll("§.", "");
+        Text labeled = Text.literal(groupName + " · " + name);
+        enqueueDeduped(senderUUID, labeled, content, -1, NotificationType.GROUP, null);
+    }
+
+    /** 群聊系统通知（被拉进群 / 被踢 / 群解散）：无发送者，纯文本横幅。 */
+    public void onGroupNotice(Text content) {
+        if (MinecraftClient.getInstance().player == null) return;
+        if (!ChatBubbleClientSetup.config().mentionBannerEnabled()) return;
+        enqueueDeduped(new UUID(0, 0), Text.empty(), content, -1, NotificationType.GROUP, null);
+    }
+
     /** 免打扰只压「被动接收」类横幅，而且**按会话分别判定**：
      *  <ul>
      *    <li>WHISPER —— 看这条私聊的对话对象（partnerName）自己有没有开免打扰；</li>

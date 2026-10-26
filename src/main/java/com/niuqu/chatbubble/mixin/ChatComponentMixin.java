@@ -182,6 +182,34 @@ public class ChatComponentMixin {
             return;
         }
 
+        // 玩家互动动作的**退化路径**（服务端没有 e33chat:player_action 通道，例如 Paper +
+        // 只实现引用同步的插件）：动作消息只能作为普通聊天到达，形如「拍了拍 B 说：正文」。
+        // 这里把它还原成 `A 拍了拍 B 说：正文` 并落成 SYSTEM 行（居中、无气泡），
+        // 与走 payload 的收端渲染完全一致 —— 否则同一句话在发送者那边是系统行、
+        // 在接收者那边却是普通气泡（用户实测反馈的不一致）。
+        // 判据只认 8 个内置词条（PlayerActionVerbs.isKnownText），不会吞掉普通聊天。
+        String actionBody = meta.whisper()
+            ? ChatMessageStore.extractWhisperContent(text, meta)
+            : meta.rawContent().getString();
+        String actionLine = com.niuqu.chatbubble.chat.action.ActionMessages.plainActionLine(
+            meta.senderName().getString(), actionBody);
+        if (actionLine != null) {
+            ci.cancel();
+            // 自己发出去的那条回显：本地在发送时**已经插过**同一条系统行（sendActionMessage
+            // 无条件插），这里只吞掉、不再插第二次 —— pending echo 万一被清理掉（>10s 过期）
+            // 也不会出现「一条动作两行字」。
+            var selfPlayer = MinecraftClient.getInstance().player;
+            boolean fromSelf = selfPlayer != null && meta.senderUUID() != null
+                && meta.senderUUID().equals(selfPlayer.getUuid());
+            if (!fromSelf) {
+                com.niuqu.chatbubble.chat.action.ActionMessages.receivePlain(
+                    actionLine, meta.whisper() ? meta.whisperPartner() : null);
+            } else {
+                ChatMessageStore.debugLog(() -> "[e33chat] action echo(plain) swallowed | " + actionLine);
+            }
+            return;
+        }
+
         // Incoming whisper (someone whispers you): same unified format, sender's name
         if (meta.whisper()) {
             ci.cancel();

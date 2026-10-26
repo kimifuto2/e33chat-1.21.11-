@@ -25,7 +25,9 @@ import java.util.*;
 public class MentionNotificationBanner {
     public static final MentionNotificationBanner INSTANCE = new MentionNotificationBanner();
 
-    public enum NotificationType { MENTION, QUOTE, WHISPER, SYSTEM }
+    /** 横幅类型。GROUP = 群聊（新消息 / 被拉进群 / 被踢 / 群解散），
+     *  前缀「[群聊]」，头像只在有真实发送者时画（系统类群通知走无头像的纯文本样式）。 */
+    public enum NotificationType { MENTION, QUOTE, WHISPER, SYSTEM, GROUP }
 
     private static final long VISIBLE_MS_PERIOD = 1000;
     private static final long SLIDE_IN_MS = 250;
@@ -72,12 +74,16 @@ public class MentionNotificationBanner {
             case QUOTE -> Text.translatable("e33chat.banner.quote").getString();
             case WHISPER -> Text.translatable("e33chat.banner.whisper").getString();
             case SYSTEM -> Text.translatable("e33chat.banner.system").getString();
+            case GROUP -> Text.translatable("e33chat.banner.group").getString();
         };
         Text labeledName = Text.literal(prefix).append(senderName);
 
         // System banners carry no sender — plain text, no avatar, flush text start.
         // [系统] 标签与第一行内容同行，内容宽度预算扣掉标签宽，避免同行溢出横幅
-        boolean hasAvatar = type != NotificationType.SYSTEM;
+        // 群聊通知（被拉进群 / 被踢 / 解散）没有发送者（nil UUID）→ 同样走无头像的纯文本样式，
+        // 否则会画出一个默认皮肤的假头像。
+        boolean hasAvatar = type != NotificationType.SYSTEM
+            && senderUUID != null && !NIL_UUID.equals(senderUUID);
         int textOriginX = hasAvatar ? TEXT_X : TEXT_X_PLAIN;
         int maxTextW = Math.min(MAX_TEXT_W, mc.getWindow().getScaledWidth() - textOriginX - 12);
         int dotsW = mc.textRenderer.getWidth("...");
