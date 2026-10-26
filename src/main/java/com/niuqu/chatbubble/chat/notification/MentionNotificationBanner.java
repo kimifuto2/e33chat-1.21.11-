@@ -58,6 +58,8 @@ public class MentionNotificationBanner {
     /** Last logged stack sizes, so the debug line only fires on change. */
     private int lastLoggedVisible = -1;
     private int lastLoggedExiting = -1;
+    /** 聊天面板打开时音乐岛改画在面板下方，此时屏内 @ 横幅不为它让位。 */
+    private boolean musicIslandSuppressed;
 
     private MentionNotificationBanner() {}
 
@@ -168,13 +170,24 @@ public class MentionNotificationBanner {
     }
 
     public void render(DrawContext g, int screenW, int screenH) {
+        render(g, screenW, screenH, true);
+    }
+
+    /**
+     * @param withMusicIsland 是否绘制常驻音乐岛。聊天面板打开时音乐岛改由 HUD 层画在
+     *                        面板**下方**（它不常驻以外的横幅仍然叠在最上层），屏内叠层
+     *                        只画 @ 横幅时传 {@code false}：不画岛，@ 横幅也不为它让位。
+     */
+    public void render(DrawContext g, int screenW, int screenH, boolean withMusicIsland) {
+        this.musicIslandSuppressed = !withMusicIsland;
         // 关掉 @ 横幅不应连带关掉音乐岛：两者任一需要画就继续往下走
-        if (!ChatBubbleClientSetup.config().mentionBannerEnabled() && !MusicIslandBanner.INSTANCE.visible()) return;
+        if (!ChatBubbleClientSetup.config().mentionBannerEnabled()
+            && !(withMusicIsland && MusicIslandBanner.INSTANCE.visible())) return;
         // 到期/退出清除：HUD 层每帧 tick，但屏内路径(renderBannerForScreen)不走 HUD tick，
         // 所以在渲染开头先 tick 一次，保证横幅在任意渲染路径都会按时自动隐藏。
         this.tick();
         // 绘制顺序：先画上方的音乐岛，再画 @ 横幅（横幅的顶部 Y 由 stackShift() 让位）
-        if (MusicIslandBanner.INSTANCE.visible()) {
+        if (withMusicIsland && MusicIslandBanner.INSTANCE.visible()) {
             MusicIslandBanner.INSTANCE.render(g, screenW, screenH);
         }
         if (!ChatBubbleClientSetup.config().mentionBannerEnabled()) return;
@@ -286,6 +299,8 @@ public class MentionNotificationBanner {
     /** 横幅叠顶部 Y：用户配置的顶部偏移 + Jade 避让下压量 + 音乐岛让位量。 */
     private float stackTopY() {
         float own = ChatBubbleClientSetup.config().bannerOffsetY() + jadeShift;
+        // 聊天面板打开时音乐岛画在面板下方（屏内只画 @ 横幅），此时不让位
+        if (musicIslandSuppressed) return own;
         int shift = MusicIslandBanner.INSTANCE.stackShift();
         if (shift <= 0) return own;
         // 两个胶囊的 Jade 下压各自独立平滑（水平重叠判定用的半宽不同），所以不能只加

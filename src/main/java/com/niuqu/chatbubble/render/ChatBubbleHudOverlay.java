@@ -9,6 +9,7 @@ import com.niuqu.chatbubble.render.Appearance;
 
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.niuqu.chatbubble.chat.notification.MentionNotificationBanner;
+import com.niuqu.chatbubble.chat.notification.MusicIslandBanner;
 import com.niuqu.chatbubble.config.ChatBubbleConfig;
 import java.util.List;
 import net.minecraft.client.MinecraftClient;
@@ -47,8 +48,16 @@ public class ChatBubbleHudOverlay {
         g.getMatrices().translate(0, 0);
 
         MentionNotificationBanner.INSTANCE.tick();
+        boolean chatPanelOpen = mc.currentScreen instanceof ChatBubbleScreen;
         if (mc.currentScreen == null) {
             MentionNotificationBanner.INSTANCE.render(g,
+                mc.getWindow().getScaledWidth(),
+                mc.getWindow().getScaledHeight());
+        } else if (chatPanelOpen) {
+            // 聊天面板打开时：常驻音乐岛画在 HUD 层（在屏幕内容之前绘制），
+            // 于是它落在面板**下方**、被面板盖住，不再遮挡聊天内容；
+            // @ 等瞬时通知横幅仍由 renderBannerForScreen 叠在面板最上层。
+            MusicIslandBanner.INSTANCE.render(g,
                 mc.getWindow().getScaledWidth(),
                 mc.getWindow().getScaledHeight());
         }
@@ -85,14 +94,17 @@ public class ChatBubbleHudOverlay {
     }
 
     // Fabric's HUD layer draws behind the screen batch; screens that render over
-    // it re-invoke this so the banner stays visible on top
+    // it re-invoke this so the banner stays visible on top.
+    // 音乐岛不在这里画：面板打开时它已改由 HUD 层画在面板下方（见 render），
+    // 否则会挡住聊天内容。@ 等瞬时横幅仍叠在最上层。
     public static void renderBannerForScreen(DrawContext g) {
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.player == null || mc.options == null) return;
         if (mc.currentScreen instanceof ChatBubbleScreen) {
             MentionNotificationBanner.INSTANCE.render(g,
                 mc.getWindow().getScaledWidth(),
-                mc.getWindow().getScaledHeight());
+                mc.getWindow().getScaledHeight(),
+                false);
         }
     }
 
