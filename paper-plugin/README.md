@@ -47,14 +47,25 @@ $env:JAVA_TOOL_OPTIONS = '-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7899 -Dhtt
 & 'C:\AI\ds harness\工作区\聊天mod移植1.21.11\gradle-dist\gradle-9.5.1\bin\gradle.bat' --no-daemon --console=plain build
 ```
 
-产物：`build/libs/E33ChatPaper-3.0.1.jar`（约 15 KB，`paper-api` 是 `compileOnly`，不打进 jar）。
+产物：`build/libs/E33ChatPaper-26.2-3.0.1.jar`（**15,315 字节**，`paper-api` 是 `compileOnly`，不打进 jar）。
+
+| 项目 | 值 |
+|---|---|
+| 目标服务端 | **Paper 26.2**（build 135；服务端需 **Java 25**） |
+| `paper-api` 坐标 | `io.papermc.paper:paper-api:26.2.build.135-stable` |
+| `paper-plugin.yml` 的 `api-version` | **`'26.2'`**（26.x 写 `<major>.<minor>`，**不是** `'1.21'`） |
+| 编译工具链 | **JDK 25**（`options.release = 25`；paper-api 的 class 主版本是 69） |
+| 真机验证 | 已在 **Paper 26.2 build 135** 加载通过 |
+
+> 26.x 起版本坐标换了体系：`<mc>.build.<build>-<channel>`，**不再是** `1.21.11-R0.1-SNAPSHOT`；
+> 旧的 `api.papermc.io/v2` 对 26.x 已 sunset，查最新 build 用 `fill.papermc.io/v3`。
 
 > 判据只看输出里的 `BUILD SUCCESSFUL`。PowerShell 会把 JVM 的 `Picked up JAVA_TOOL_OPTIONS`
 > 当错误，退出码不可信；偶发毫秒级失败（daemon/锁竞争）隔 4 秒重试即可（最多 3 次）。
 
 ## 安装与测试
 
-1. 把 `build/libs/E33ChatPaper-3.0.1.jar` 放进 Paper 1.21.11 服务器的 `plugins/`，重启服务器。
+1. 把 `build/libs/E33ChatPaper-26.2-3.0.1.jar` 放进 **Paper 26.2** 服务器（build 135，**服务端需 Java 25**）的 `plugins/`，重启服务器。
 2. 服务器日志应出现：
    ```
    [E33Chat] E33ChatPaper enabled | in=e33chat:quote_sync | out=e33chat:chat_meta | dedupeWindow=10000ms | mentions=on(AsyncChatEvent)
@@ -166,7 +177,7 @@ $env:JAVA_TOOL_OPTIONS = '-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7899 -Dhtt
 
 ```
 build.gradle / settings.gradle / gradle.properties
-src/main/resources/paper-plugin.yml            # name/version/main/api-version
+src/main/resources/paper-plugin.yml            # name/version/main/api-version: '26.2'
 src/main/java/com/niuqu/chatbubble/paper/
     E33ChatPaperPlugin.java                    # 入口：通道注册、去重、@提及事件、广播
     MentionParser.java                         # @名字 解析（大小写不敏感 / 最长匹配 / 去重）
