@@ -60,7 +60,7 @@
 | 服务端类型 | 装什么 | 效果 |
 |---|---|---|
 | Fabric 服务端 **26.3** | 本分支的 `e33chat-Fabric-26.3-3.0.1.jar` | 消息元数据 / 引用精确跳转 / @提及同步全部可用 |
-| Paper | `paper-plugin/` 构建出的 `E33ChatPaper-3.0.1.jar`（目标 **Paper 1.21.11**） | 线协议与客户端一致；**本分支未在 Paper 26.x 上验证过该插件** |
+| Paper **26.3**（服务端需 Java 25） | `paper-plugin/` 构建出的 `E33ChatPaper-26.3-3.0.1.jar`（`paper-api` `26.3.build.222-stable`，`api-version: '26.3'`） | 线协议与客户端一致；已在 **Paper 26.3 build 222** 真机加载通过 |
 
 ---
 
@@ -309,16 +309,35 @@ gradle build
 
 ## paper-plugin（Paper 服务端插件）
 
-`paper-plugin/` 是独立的 Gradle 子项目（不在根构建里），随本分支一同携带，产物为 **Paper 1.21.11** 服务端插件 **E33ChatPaper 3.0.1**：
+`paper-plugin/` 是独立的 Gradle 子项目（不在根构建里），随本分支一同携带，产物为 **Paper 26.3** 服务端插件 **E33ChatPaper 3.0.1**：
 
 | 项目 | 值 |
 |---|---|
-| 目标服务端 | Paper 1.21.11（未在 Paper 26.x 上验证） |
-| 产物 | `paper-plugin/build/libs/【paper端】E33ChatPaper-3.0.1.jar` |
-| 大小 | **15,028 B**（加入 @提及跨玩家同步前为 11,456 B） |
-| 作用 | 引用同步（C2S `e33chat:quote_sync` → S2C `e33chat:chat_meta` 广播）+ @提及同步（`AsyncChatEvent` 解析 `@名字`） |
+| 目标服务端 | **Paper 26.3**（build 222；服务端需 **Java 25**） |
+| paper-api 坐标 | `io.papermc.paper:paper-api:26.3.build.222-stable`（`compileOnly`） |
+| `paper-plugin.yml` 的 `api-version` | **`'26.3'`** |
+| 产物 | `paper-plugin/build/libs/E33ChatPaper-26.3-3.0.1.jar` |
+| 大小 | **15,301 B**（1.21.11 版为 15,028 B） |
+| 验证 | 已在 **Paper 26.3 build 222** 真机加载通过 |
+| 作用 | 引用跨玩家同步（C2S `e33chat:quote_sync` → S2C `e33chat:chat_meta` 广播）+ @提及同步（`AsyncChatEvent` 解析 `@名字`） |
+
+### 与 1.21.11 版（`main` 分支）的三处差别
+
+插件**业务代码零改动**：用到的 Bukkit/Adventure API 在 1.21.11 → 26.2 → 26.3 全部同签名，26.3 / 26.2 两个插件的 **6 个 class 逐字节相同**，只有 `MANIFEST` 与 `paper-plugin.yml` 里的 `api-version` 不同。改的只是平台相关的三处：
+
+1. **paper-api 换了版本体系**：26.x 的坐标是 `<mc>.build.<build>-<channel>`，即 `26.3.build.222-stable`，**不再是** `1.21.11-R0.1-SNAPSHOT`；旧的 `26.3-R0.1-SNAPSHOT` 目录在仓库里并不存在（那套 fill API 对 26.x 已 sunset）。
+2. **`paper-plugin.yml` 的 `api-version` 写 `'26.3'`**（不是 `'1.21'`）：26.x 直接写 `<major>.<minor>`。
+3. **编译与运行都要求 Java 25**：paper-api 的 class 主版本是 69（= Java 25），`paper-plugin/build.gradle` 随之用 `release 25`。
 
 线格式与 Fabric 侧逐字节一致，客户端无需任何改动；字段表与构建方式见 [`paper-plugin/README.md`](paper-plugin/README.md)。
+
+启动日志（26.3 build 222 实测）：
+
+```
+[E33Chat] E33ChatPaper enabled | in=e33chat:quote_sync | out=e33chat:chat_meta | dedupeWindow=10000ms | mentions=on(AsyncChatEvent)
+```
+
+> 大整合包仍需 `-Dpaper.disableChannelLimit=true`：Paper 的通道上限是 128，最多只能占 127 个（原因见上文「Paper 服务端的通道数量上限」）。
 
 ---
 
