@@ -390,7 +390,7 @@ public class ChatMessageStore {
     }
 
     // package-private test seam: headless unit tests stub this to return null
-    // so addMessage never touches MinecraftClient.getInstance()
+    // so addMessage never touches Minecraft.getInstance()
     public static java.util.function.Supplier<net.minecraft.world.entity.player.Player> localPlayerSupplier =
         () -> net.minecraft.client.Minecraft.getInstance().player;
 
@@ -577,6 +577,229 @@ public class ChatMessageStore {
         while (messages.size() > MAX)
             messages.remove(0);
         return created;
+    }
+
+    // ===== 群聊（会话键 "group:<groupId>"，复用 whisperPartner 字段）=================
+    // 设计：群会话在消息模型里就是「一个特殊的私聊对象」。这样气泡渲染、引用、图片、
+    // 未读红点、历史落地（HistoryStore 连 whisperPartner 一起写）全部零改动复用；
+    // 差别只在「谁负责写消息」—— 群消息由 GroupStore 从服务端 S2C 收到后走
+    // addGroupMessage，不经过 addMessage 的私聊副作用链（否则每条群消息都会弹
+    // [私聊] 横幅 + 私聊提示音）。
+
+    /** 群会话键前缀：{@code "group:" + groupId}。 */
+    public static final String GROUP_PARTNER_PREFIX = "group:";
+
+    public static boolean isGroupPartner(String partner) {
+        return partner != null && partner.startsWith(GROUP_PARTNER_PREFIX);
+    }
+
+    public static String groupPartnerKey(UUID groupId) {
+        return GROUP_PARTNER_PREFIX + groupId;
+    }
+
+    public static UUID groupIdFromPartner(String partner) {
+        if (!isGroupPartner(partner)) return null;
+        try {
+            return UUID.fromString(partner.substring(GROUP_PARTNER_PREFIX.length()));
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 消息明文 → Text。群消息一律按明文渲染（服务端只转发，不解释颜色码）。 */
+    public static Component renderContent(String text) {
+        return Component.literal(text == null ? "" : text);
+    }
+
+    /**
+     * 追加一条群聊消息（服务端转发的 / 自己发的本地回显都走这里）。
+     *
+     * <p>**未读语义与私聊完全一致**（第 6 轮修正）：只要不是自己发的，就
+     * {@link #markWhisperUnread} + 累计未读数 —— **群免打扰（DND）不再豁免**。
+     * 私聊那边 {@code addMessage} 的 {@code markWhisperUnread} 从不看 {@code isWhisperDnd}，
+     * 群行现在照同一个口径：DND 只负责「不弹横幅 / 不出提示音」（判定在
+     * {@code GroupStore.receiveMessage} 里，与这里无关），未读红点照常亮，
+     * 侧边栏的月亮与红点可以同时出现。
+     *
+     * @param localSend true = 自己刚发出、正在做本地回显；false = 服务端转发回来的。
+     *                  转发回来的**自己**消息如果在 15 秒内已经有一条同 msgHash 的本地回显，
+     *                  直接丢弃（服务端会把消息也发给发送者，不去重就会看到两条气泡）。
+     * @return 落库后的消息实例；被去重/空白内容丢弃时返回 null。
+     */
+    public static ChatMessage addGroupMessage(UUID groupId, UUID senderUUID, Component senderName,
+                                              Component content, String rawPlayerName,
+                                              boolean localSend, String msgHash) {
+        if (groupId == null) return null;
+        if (content == null || content.getString().isBlank()) return null;
+        String key = groupPartnerKey(groupId);
+        String hash = (msgHash != null && !msgHash.isEmpty())
+            ? msgHash : String.valueOf(content.getString().hashCode());
+
+        var localPlayer = localPlayerSupplier.get();
+        String playerName = localPlayer != null ? localPlayer.getName().getString() : "";
+        boolean own = localPlayer != null && senderUUID != null
+            && senderUUID.equals(localPlayer.getUUID());
+        if (!own && rawPlayerName != null && !rawPlayerName.isEmpty()) {
+            own = rawPlayerName.equals(playerName);
+        }
+
+        if (!localSend) {
+            ChatMessage dup = findRecentGroupEcho(key, hash);
+            if (dup != null) {
+                debugLog(() -> "[e33chat] group relay deduped | key=" + key + " | hash=" + hash);
+                return null;
+            }
+        }
+
+        // 引用块：与私聊一致 —— 自己发的那条取 setPendingReply 记下的引用；群消息的引用
+        // 只在本机气泡上显示（服务端不解析、也不做跨客户端定位），去掉也不会串到别的会话。
+        String replyContent = null;
+        String replySender = null;
+        if (own && pendingReplyContent != null) {
+            replyContent = pendingReplyContent;
+            replySender = pendingReplySender;
+            pendingReplyContent = null;
+            pendingReplySender = null;
+        }
+
+        ChatMessage created = new ChatMessage(
+            senderUUID,
+            senderName != null ? senderName : Component.literal(""),
+            content,
+            System.currentTimeMillis(),
+            own,
+            false,
+            replyContent,
+            replySender,
+            hash,
+            1,
+            rawPlayerName,
+            true,
+            key,
+            null);
+        messages.add(created);
+        while (messages.size() > MAX)
+            messages.remove(0);
+        historyDirty = true;
+
+        if (own) {
+            cacheOwnDecoratedName(senderName);
+        } else if (senderUUID != null && !senderUUID.equals(new UUID(0, 0))) {
+            rememberPlayer(senderUUID, rawPlayerName, senderName != null ? senderName.getString() : "");
+        }
+
+        // 未读与私聊同源：非自己发的就置该会话未读 + 累计未读数（**DND 也照记**，
+        // 不再有 quiet 豁免 —— DND 只静默横幅/提示音，见 GroupStore.receiveMessage）。
+        if (!own) {
+            markWhisperUnread(key);
+            boolean mentioned = com.niuqu.chatbubble.chat.MentionDetector.isMentioned(
+                content.getString(), playerName,
+                ChatBubbleClientSetup.config().mentionRequireAt(), replySender);
+            if (!screenOpen) {
+                unreadCount++;
+                if (mentioned) hasUnreadMentionFlag = true;
+            }
+        }
+        return created;
+    }
+
+    /**
+     * 某个**私聊会话**里的系统提示（第 4 轮：进群邀请 / 邀请回执 / 邀请被拒）。
+     *
+     * <p>与 {@link #addLocalNotice} 的区别：它指定私聊对象（whisperPartner = 对方名字），
+     * 系统消息因此落在「我 ↔ 对方」的私聊视图里，而不是当前正在看的那个会话；也不走
+     * addMessage 的副作用链（不弹横幅、不发声、不累计未读数）。
+     *
+     * @param partnerName 私聊对象名（不能为空；空 = 调用方拿不到对方名字，直接丢弃）
+     * @param content     提示正文
+     * @param markUnread  true = 给这个会话打未读点（收到别人的邀请时希望侧边栏亮起来）
+     * @return 落库后的消息实例；参数非法/空白内容时 null
+     */
+    public static ChatMessage addWhisperNotice(String partnerName, Component content, boolean markUnread) {
+        if (partnerName == null || partnerName.isBlank()) return null;
+        if (content == null || content.getString().isBlank()) return null;
+        ChatMessage created = new ChatMessage(
+            new UUID(0, 0), Component.empty(), content, System.currentTimeMillis(),
+            false, true, null, null, String.valueOf(content.getString().hashCode()), 1,
+            null, true, partnerName, null);
+        messages.add(created);
+        while (messages.size() > MAX)
+            messages.remove(0);
+        if (markUnread) markWhisperUnread(partnerName);
+        return created;
+    }
+
+    /** 群会话里的系统提示（「你已被加入群聊 xxx」/「群已解散」等）：只进列表，不弹横幅不发声。 */
+    public static ChatMessage addGroupNotice(UUID groupId, Component content) {
+        if (groupId == null || content == null || content.getString().isBlank()) return null;
+        String key = groupPartnerKey(groupId);
+        ChatMessage created = new ChatMessage(
+            new UUID(0, 0), Component.empty(), content, System.currentTimeMillis(),
+            false, true, null, null, String.valueOf(content.getString().hashCode()), 1,
+            null, true, key, null);
+        messages.add(created);
+        while (messages.size() > MAX)
+            messages.remove(0);
+        return created;
+    }
+
+    /**
+     * 动作消息（拍了拍等）落库：**系统样式**的一行（{@code A 拍了拍 B 说：正文}）。
+     *
+     * <p>动作行有两条来源，都落在这里（渲染完全一致：居中、无气泡、无头像/发送者名）：
+     * {@code e33chat:player_action_relay} payload（服务端装本模组）与
+     * {@link com.niuqu.chatbubble.chat.action.ActionMessages#receivePlain} 还原的普通聊天
+     * （服务端没这个通道时的退化路径）。
+     *
+     * <p>不复用 {@link #addMessage}：动作消息不是玩家聊天，不能走「防刷屏合并 / @ 检测 /
+     * 私聊横幅 / 提示音」那条副作用链（否则每被拍一下都弹一次横幅）。它只需要：
+     * 进列表（按会话归属可见）、写历史、按需打未读点。
+     *
+     * @param conversationPartner 会话键：{@code null}/空 = 公屏；{@code "group:&lt;uuid&gt;"} =
+     *                            某个群聊；其它值 = 私聊对象名（与 {@link #addWhisperNotice} 同一套语义）。
+     * @param markUnread          收到**别人**的动作消息、且没在看那个会话时传 true（打未读点）；
+     *                            自己的本地回显传 false。
+     */
+    public static ChatMessage addActionMessage(Component content, String conversationPartner, boolean markUnread) {
+        if (content == null || content.getString().isBlank()) return null;
+        boolean whisper = conversationPartner != null && !conversationPartner.isEmpty();
+        ChatMessage created = new ChatMessage(
+            new UUID(0, 0), Component.empty(), content, System.currentTimeMillis(),
+            false, true, null, null, String.valueOf(content.getString().hashCode()), 1,
+            null, whisper, whisper ? conversationPartner : null, null);
+        messages.add(created);
+        while (messages.size() > MAX)
+            messages.remove(0);
+        historyDirty = true;
+        if (markUnread) {
+            if (whisper) markWhisperUnread(conversationPartner);
+            if (!screenOpen) unreadCount++;
+        }
+        return created;
+    }
+
+    /** 自己在 15 秒内发过同 msgHash 的群消息？（服务端会把消息也回给发送者） */
+    private static ChatMessage findRecentGroupEcho(String key, String hash) {
+        long now = System.currentTimeMillis();
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessage m = messages.get(i);
+            if (now - m.time() > 15_000L) break;
+            if (!m.whisper() || !key.equals(m.whisperPartner())) continue;
+            if (hash.equals(m.messageHash())) return m;
+        }
+        return null;
+    }
+
+    /** 群会话最后一条非系统消息（侧边栏预览用）。 */
+    public static ChatMessage getLatestGroupMessage(UUID groupId) {
+        if (groupId == null) return null;
+        String key = groupPartnerKey(groupId);
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessage m = messages.get(i);
+            if (m.isSystem()) continue;
+            if (m.whisper() && key.equals(m.whisperPartner())) return m;
+        }
+        return null;
     }
 
     public static Component sliceStyled(Component src, int start, int end) {

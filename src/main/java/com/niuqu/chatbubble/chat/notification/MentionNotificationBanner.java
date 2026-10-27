@@ -26,7 +26,9 @@ import java.util.*;
 public class MentionNotificationBanner {
     public static final MentionNotificationBanner INSTANCE = new MentionNotificationBanner();
 
-    public enum NotificationType { MENTION, QUOTE, WHISPER, SYSTEM }
+    /** 横幅类型。GROUP = 群聊（新消息 / 被拉进群 / 被踢 / 群解散），
+     *  前缀「[群聊]」，头像只在有真实发送者时画（系统类群通知走无头像的纯文本样式）。 */
+    public enum NotificationType { MENTION, QUOTE, WHISPER, SYSTEM, GROUP }
 
     private static final long VISIBLE_MS_PERIOD = 1000;
     private static final long SLIDE_IN_MS = 250;
@@ -59,6 +61,8 @@ public class MentionNotificationBanner {
     /** Last logged stack sizes, so the debug line only fires on change. */
     private int lastLoggedVisible = -1;
     private int lastLoggedExiting = -1;
+    /** 聊天面板打开时音乐岛改画在面板下方，此时屏内 @ 横幅不为它让位。 */
+    private boolean musicIslandSuppressed;
 
     private MentionNotificationBanner() {}
 
@@ -71,12 +75,16 @@ public class MentionNotificationBanner {
             case QUOTE -> Component.translatable("e33chat.banner.quote").getString();
             case WHISPER -> Component.translatable("e33chat.banner.whisper").getString();
             case SYSTEM -> Component.translatable("e33chat.banner.system").getString();
+            case GROUP -> Component.translatable("e33chat.banner.group").getString();
         };
         Component labeledName = Component.literal(prefix).append(senderName);
 
         // System banners carry no sender — plain text, no avatar, flush text start.
         // [系统] 标签与第一行内容同行，内容宽度预算扣掉标签宽，避免同行溢出横幅
-        boolean hasAvatar = type != NotificationType.SYSTEM;
+        // 群聊通知（被拉进群 / 被踢 / 解散）没有发送者（nil UUID）→ 同样走无头像的纯文本样式，
+        // 否则会画出一个默认皮肤的假头像。
+        boolean hasAvatar = type != NotificationType.SYSTEM
+            && senderUUID != null && !NIL_UUID.equals(senderUUID);
         int textOriginX = hasAvatar ? TEXT_X : TEXT_X_PLAIN;
         int maxTextW = Math.min(MAX_TEXT_W, mc.getWindow().getGuiScaledWidth() - textOriginX - 12);
         int dotsW = mc.font.width("...");
@@ -169,13 +177,24 @@ public class MentionNotificationBanner {
     }
 
     public void render(UiCanvas g, int screenW, int screenH) {
+        render(g, screenW, screenH, true);
+    }
+
+    /**
+     * @param withMusicIsland 是否绘制常驻音乐岛。聊天面板打开时音乐岛改由 HUD 层画在
+     *                        面板**下方**（它不常驻以外的横幅仍然叠在最上层），屏内叠层
+     *                        只画 @ 横幅时传 {@code false}：不画岛，@ 横幅也不为它让位。
+     */
+    public void render(UiCanvas g, int screenW, int screenH, boolean withMusicIsland) {
+        this.musicIslandSuppressed = !withMusicIsland;
         // 关掉 @ 横幅不应连带关掉音乐岛：两者任一需要画就继续往下走
-        if (!ChatBubbleClientSetup.config().mentionBannerEnabled() && !MusicIslandBanner.INSTANCE.visible()) return;
+        if (!ChatBubbleClientSetup.config().mentionBannerEnabled()
+            && !(withMusicIsland && MusicIslandBanner.INSTANCE.visible())) return;
         // 到期/退出清除：HUD 层每帧 tick，但屏内路径(renderBannerForScreen)不走 HUD tick，
         // 所以在渲染开头先 tick 一次，保证横幅在任意渲染路径都会按时自动隐藏。
         this.tick();
         // 绘制顺序：先画上方的音乐岛，再画 @ 横幅（横幅的顶部 Y 由 stackShift() 让位）
-        if (MusicIslandBanner.INSTANCE.visible()) {
+        if (withMusicIsland && MusicIslandBanner.INSTANCE.visible()) {
             MusicIslandBanner.INSTANCE.render(g, screenW, screenH);
         }
         if (!ChatBubbleClientSetup.config().mentionBannerEnabled()) return;
@@ -287,6 +306,8 @@ public class MentionNotificationBanner {
     /** 横幅叠顶部 Y：用户配置的顶部偏移 + Jade 避让下压量 + 音乐岛让位量。 */
     private float stackTopY() {
         float own = ChatBubbleClientSetup.config().bannerOffsetY() + jadeShift;
+        // 聊天面板打开时音乐岛画在面板下方（屏内只画 @ 横幅），此时不让位
+        if (musicIslandSuppressed) return own;
         int shift = MusicIslandBanner.INSTANCE.stackShift();
         if (shift <= 0) return own;
         // 两个胶囊的 Jade 下压各自独立平滑（水平重叠判定用的半宽不同），所以不能只加

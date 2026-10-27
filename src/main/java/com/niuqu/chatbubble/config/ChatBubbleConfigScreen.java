@@ -124,6 +124,8 @@ public class ChatBubbleConfigScreen extends Screen {
     private List<String> channelDietDisabledNamespaces = new ArrayList<>();
     /** 灵动岛 × DangoMusic 联动开关（旧配置缺键 → 默认开启）。 */
     private boolean musicIslandEnabled = true;
+    /** 群聊总开关（默认开启；关掉只影响入口展示，不影响已收到的群消息落库）。 */
+    private boolean groupChatEnabled = true;
 
     // 打开时的快照——用于 changeCount / revertAll
     private ChatBubbleConfig snapshot;
@@ -247,7 +249,9 @@ public class ChatBubbleConfigScreen extends Screen {
             ChatBubbleClientSetup.config().channelDietMode(),
             channelDietLimit, channelDietDisabledNamespaces,
             // 灵动岛 × DangoMusic 联动（缺键时 loadFromConfig 已收敛成默认开启）
-            musicIslandEnabled));
+            musicIslandEnabled,
+            // 群聊总开关（缺键时 loadFromConfig 已收敛成默认开启）
+            groupChatEnabled));
     }
 
     private void loadFromConfig() {
@@ -305,6 +309,8 @@ public class ChatBubbleConfigScreen extends Screen {
         channelDietDisabledNamespaces = new ArrayList<>(cfg.channelDietDisabledResolved());
         // DangoMusic 联动：旧配置缺键 → null → 视为开启
         musicIslandEnabled = cfg.musicIslandEnabledResolved();
+        // 群聊：旧配置缺键 → null → 视为开启
+        groupChatEnabled = cfg.groupChatEnabledResolved();
         messageGap = cfg.messageGap() != null ? cfg.messageGap() : 6;
         avatarSize = cfg.avatarSize() != null ? cfg.avatarSize() : 20;
         bubbleSize = cfg.bubbleSize() != null ? cfg.bubbleSize() : 9;
@@ -526,7 +532,9 @@ public class ChatBubbleConfigScreen extends Screen {
             OptionDef.bool("e33chat.config.mention_require_at", Ref.b(() -> mentionRequireAt, v -> mentionRequireAt = v))),
         SectionDef.of("e33chat.config.section.whisper",
             OptionDef.bool("e33chat.config.mention_whisper_banner", Ref.b(() -> mentionWhisperBanner, v -> mentionWhisperBanner = v)),
-            OptionDef.bool("e33chat.config.sound_whisper", Ref.b(() -> soundWhisper, v -> soundWhisper = v))),
+            OptionDef.bool("e33chat.config.sound_whisper", Ref.b(() -> soundWhisper, v -> soundWhisper = v)),
+            // 群聊总开关：关掉后侧边栏「+」按钮禁用、群会话行隐藏（服务端中继本身不受影响）
+            OptionDef.bool("e33chat.config.group_chat_enabled", Ref.b(() -> groupChatEnabled, v -> groupChatEnabled = v))),
         SectionDef.of("e33chat.config.section.system",
             OptionDef.bool("e33chat.config.system_banner_enabled", Ref.b(() -> systemBannerEnabled, v -> systemBannerEnabled = v)),
             OptionDef.bool("e33chat.config.sound_system", Ref.b(() -> soundSystem, v -> soundSystem = v))),
@@ -1026,7 +1034,7 @@ public class ChatBubbleConfigScreen extends Screen {
                 width / 2 + 112, height - 26, c().configLabel(), false);
 
         if (tooltipKey != null)
-            // wrap to 190px like Forge/Neo's font.split — the single-Text overload
+            // wrap to 190px like Forge/Neo's font.split — the single-Component overload
             // renders one unwrapped line and long descriptions overflow the screen
             g.drawTooltip(
                 font.split(Component.translatable(tooltipKey), 190),
