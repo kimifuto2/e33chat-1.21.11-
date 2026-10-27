@@ -5,16 +5,31 @@ import com.niuqu.chatbubble.config.ServerConfigManager;
 import com.niuqu.chatbubble.network.ChatMetaPayload;
 import com.niuqu.chatbubble.network.ConfigSyncPayload;
 import com.niuqu.chatbubble.network.ConfigSyncV2Payload;
+import com.niuqu.chatbubble.network.GroupCreatePayload;
+import com.niuqu.chatbubble.network.GroupDisbandPayload;
+import com.niuqu.chatbubble.network.GroupEventPayload;
+import com.niuqu.chatbubble.network.GroupInviteEventPayload;
+import com.niuqu.chatbubble.network.GroupInvitePayload;
+import com.niuqu.chatbubble.network.GroupInviteRespondPayload;
+import com.niuqu.chatbubble.network.GroupKickPayload;
+import com.niuqu.chatbubble.network.GroupLeavePayload;
+import com.niuqu.chatbubble.network.GroupMessagePayload;
+import com.niuqu.chatbubble.network.GroupMessageRelayPayload;
+import com.niuqu.chatbubble.network.GroupRenamePayload;
+import com.niuqu.chatbubble.network.GroupSyncPayload;
 import com.niuqu.chatbubble.network.HistoryPayload;
 import com.niuqu.chatbubble.network.MediaRequestPayload;
 import com.niuqu.chatbubble.network.MediaResponsePayload;
 import com.niuqu.chatbubble.network.MediaUploadAckPayload;
 import com.niuqu.chatbubble.network.MediaUploadPayload;
 import com.niuqu.chatbubble.network.MediaCapPayload;
+import com.niuqu.chatbubble.network.PlayerActionPayload;
+import com.niuqu.chatbubble.network.PlayerActionRelayPayload;
 import com.niuqu.chatbubble.network.QuoteSyncPayload;
 import com.niuqu.chatbubble.network.ServerConfigSavePayload;
 import com.niuqu.chatbubble.network.ServerConfigScreenPayload;
 import com.niuqu.chatbubble.server.DiskMediaStore;
+import com.niuqu.chatbubble.server.PlayerActionRelay;
 import net.fabricmc.api.ModInitializer;
 import com.mojang.brigadier.ParseResults;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
@@ -206,6 +221,46 @@ public class ChatBubbleMod implements ModInitializer {
         PayloadTypeRegistry.clientboundPlay().register(MediaResponsePayload.ID, MediaResponsePayload.CODEC);
         PayloadTypeRegistry.clientboundPlay().register(MediaCapPayload.ID, MediaCapPayload.CODEC);
 
+        // ── 群聊（group_*，方案 A：全部走服务端中继）──────────────────────────────
+        // C2S：建群 / 发言 / 邀请 / 回应邀请 / 踢人 / 退群 / 改名 / 解散
+        PayloadTypeRegistry.serverboundPlay().register(GroupCreatePayload.ID, GroupCreatePayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(GroupMessagePayload.ID, GroupMessagePayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(GroupInvitePayload.ID, GroupInvitePayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(GroupInviteRespondPayload.ID, GroupInviteRespondPayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(GroupKickPayload.ID, GroupKickPayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(GroupLeavePayload.ID, GroupLeavePayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(GroupRenamePayload.ID, GroupRenamePayload.CODEC);
+        PayloadTypeRegistry.serverboundPlay().register(GroupDisbandPayload.ID, GroupDisbandPayload.CODEC);
+        // S2C：群快照 / 消息转发 / 事件（被拉群、被踢、被解散…）/ 进群邀请与回应回执
+        PayloadTypeRegistry.clientboundPlay().register(GroupSyncPayload.ID, GroupSyncPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(GroupMessageRelayPayload.ID, GroupMessageRelayPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(GroupEventPayload.ID, GroupEventPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(GroupInviteEventPayload.ID, GroupInviteEventPayload.CODEC);
+
+        registerGroupReceivers();
+
+        // ── 玩家互动动作（拍了拍等）────────────────────────────────────────────
+        // C2S：目标 + 词条 id/自定义词 + 正文 + scope(+groupId)；S2C：服务端解析出的
+        // 权威词条与发送者正式名，按 scope 只发给范围内的人（不回给发送者）。
+        PayloadTypeRegistry.serverboundPlay().register(PlayerActionPayload.ID, PlayerActionPayload.CODEC);
+        PayloadTypeRegistry.clientboundPlay().register(PlayerActionRelayPayload.ID, PlayerActionRelayPayload.CODEC);
+
+        // 动作消息接收器：与群聊接收器同一套约定（整体 try/catch —— 异常绝不允许冒到
+        // 网络层，否则服务端会直接断开玩家；payload receiver 已在服务端线程执行）。
+        ServerPlayNetworking.registerGlobalReceiver(PlayerActionPayload.ID, (payload, context) -> {
+            try {
+                if (!payload.isValid()) {
+                    srvLog("player_action ignored | invalid payload | " + payload);
+                    return;
+                }
+                srvLog("player_action recv | player=" + context.player().getName().getString()
+                    + " | " + payload);
+                PlayerActionRelay.handle(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("player_action failed | " + t);
+            }
+        });
+
         ServerPlayNetworking.registerGlobalReceiver(MediaUploadPayload.ID, (payload, context) -> {
             ServerPlayer player = context.player();
             context.server().execute(() -> com.niuqu.chatbubble.server.MediaService.handleUpload(
@@ -335,6 +390,14 @@ public class ChatBubbleMod implements ModInitializer {
             // Always sync server-side settings so the client head menu matches the server
             sendServerConfigTripleTo(handler.player);
 
+            // 群聊：把该玩家所属的**全部群**补发一遍（GroupSync）。客户端因此不需要自己
+            // 持久化成员表；服务端重启丢群是已知 MVP 限制（见 README）。
+            try {
+                com.niuqu.chatbubble.server.GroupRegistry.syncAllTo(server, handler.player);
+            } catch (Throwable t) {
+                srvLog("group join sync failed | " + t);
+            }
+
             if (!historyEnabled) return;
             if (historyBuffer.isEmpty()) return;
             ServerPlayNetworking.send(handler.player,
@@ -351,6 +414,11 @@ public class ChatBubbleMod implements ModInitializer {
             DiskMediaStore s = mediaStore;
             if (s != null) s.discardAllUploads();
             mediaStore = null;
+            // 群聊：丢掉本世界的内存态（下一个世界按自己的 serverconfig 文件重新加载）
+            try {
+                com.niuqu.chatbubble.server.GroupRegistry.reset();
+            } catch (Throwable ignored) {
+            }
         });
 
         // Discard a leaving player's in-flight upload session (and temp file).
@@ -360,8 +428,110 @@ public class ChatBubbleMod implements ModInitializer {
         });
     }
 
-    // Called from CommandManagerMixin.execute (parity with Forge ChatServerListener.onCommand):
-    // /msg /tell /w /whisper carry a quote the client synced (QuoteSyncPayload); consume it
+    /**
+     * 群聊 C2S 接收器。
+     *
+     * <p>约定：
+     * <ul>
+     *   <li>每个 handler 整体 try/catch —— **服务端处理异常绝不允许踢人**（异常冒到网络层
+     *       会直接断开玩家）。</li>
+     *   <li>状态校验（是不是群成员 / 群是否存在）全部在 {@link com.niuqu.chatbubble.server.GroupRegistry}
+     *       里做，这里只做「解析 + 派发 + 记日志」。</li>
+     *   <li>payload receiver 已经在服务端线程执行（见 QuoteSync 的注释），不再套
+     *       {@code context.server().execute()}。</li>
+     * </ul>
+     */
+    private static void registerGroupReceivers() {
+        ServerPlayNetworking.registerGlobalReceiver(GroupCreatePayload.ID, (payload, context) -> {
+            try {
+                srvLog("group_create recv | player=" + context.player().getName().getString() + " | " + payload);
+                com.niuqu.chatbubble.server.GroupRegistry.create(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("group_create failed | " + t);
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(GroupMessagePayload.ID, (payload, context) -> {
+            try {
+                if (!payload.isValid()) {
+                    srvLog("group_message ignored | invalid payload | " + payload);
+                    return;
+                }
+                com.niuqu.chatbubble.server.GroupRegistry.relayMessage(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("group_message failed | " + t);
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(GroupInvitePayload.ID, (payload, context) -> {
+            try {
+                if (!payload.isValid()) {
+                    srvLog("group_invite ignored | invalid payload | " + payload);
+                    return;
+                }
+                srvLog("group_invite recv | player=" + context.player().getName().getString() + " | " + payload);
+                com.niuqu.chatbubble.server.GroupRegistry.invite(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("group_invite failed | " + t);
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(GroupInviteRespondPayload.ID, (payload, context) -> {
+            try {
+                if (!payload.isValid()) {
+                    srvLog("group_invite_respond ignored | invalid payload | " + payload);
+                    return;
+                }
+                srvLog("group_invite_respond recv | player=" + context.player().getName().getString()
+                    + " | " + payload);
+                com.niuqu.chatbubble.server.GroupRegistry.respondInvite(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("group_invite_respond failed | " + t);
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(GroupKickPayload.ID, (payload, context) -> {
+            try {
+                if (!payload.isValid()) {
+                    srvLog("group_kick ignored | invalid payload | " + payload);
+                    return;
+                }
+                srvLog("group_kick recv | player=" + context.player().getName().getString() + " | " + payload);
+                com.niuqu.chatbubble.server.GroupRegistry.kick(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("group_kick failed | " + t);
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(GroupLeavePayload.ID, (payload, context) -> {
+            try {
+                if (!payload.isValid()) return;
+                srvLog("group_leave recv | player=" + context.player().getName().getString() + " | " + payload);
+                com.niuqu.chatbubble.server.GroupRegistry.leave(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("group_leave failed | " + t);
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(GroupRenamePayload.ID, (payload, context) -> {
+            try {
+                if (!payload.isValid()) {
+                    srvLog("group_rename ignored | invalid payload | " + payload);
+                    return;
+                }
+                srvLog("group_rename recv | player=" + context.player().getName().getString() + " | " + payload);
+                com.niuqu.chatbubble.server.GroupRegistry.rename(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("group_rename failed | " + t);
+            }
+        });
+        ServerPlayNetworking.registerGlobalReceiver(GroupDisbandPayload.ID, (payload, context) -> {
+            try {
+                if (!payload.isValid()) return;
+                srvLog("group_disband recv | player=" + context.player().getName().getString() + " | " + payload);
+                com.niuqu.chatbubble.server.GroupRegistry.disband(context.server(), context.player(), payload);
+            } catch (Throwable t) {
+                srvLog("group_disband failed | " + t);
+            }
+        });
+        srvLog("group receivers registered | c2s=8 | s2c=4");
+    }
+
+    // Called from CommandManagerMixin.execute (parity with Forge ChatServerListener.onCommand):    // /msg /tell /w /whisper carry a quote the client synced (QuoteSyncPayload); consume it
     // here and broadcast the quote meta, because vanilla private messages never hit
     // ServerMessageEvents.CHAT_MESSAGE
     public static void consumePrivateMessageQuote(ParseResults<CommandSourceStack> parseResults, String command) {
