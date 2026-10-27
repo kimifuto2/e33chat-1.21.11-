@@ -118,6 +118,11 @@ final class GroupRegistry {
         plugin = owner;
     }
 
+    /** 本插件实例（{@link PlayerActionRelay} 也用它拿 Server/Logger）—— 卸载后为 null。 */
+    static Plugin plugin() {
+        return plugin;
+    }
+
     /** 服务器停止/插件卸载：清空内存态（下一次加载是全新的世界）。 */
     static synchronized void reset() {
         groups.clear();
@@ -155,6 +160,11 @@ final class GroupRegistry {
 
     static synchronized int groupCount() {
         return groups.size();
+    }
+
+    /** 全部群（按创建顺序）的只读快照 —— 供诊断/离线校验使用，别拿它改状态。 */
+    static synchronized List<Group> allGroups() {
+        return new ArrayList<>(groups.values());
     }
 
     static synchronized int pendingCount() {

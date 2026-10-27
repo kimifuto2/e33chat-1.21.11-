@@ -159,12 +159,23 @@ Fabric 客户端 --C2S e33chat:player_action--> PlayerActionRelay --S2C player_a
 所以这不是装饰性检查）：
 
 ```powershell
-$env:JAVA_HOME = 'C:\BianChengJA\JDK21'      # 26.3 / 26.2 分支换成 JDK25
-powershell -ExecutionPolicy Bypass -File verify\run-verify.ps1   # 仅 1.21.11 分支可直接跑：校验器 import 的是 yarn 名 PacketByteBuf，26.x 是 mojmap 名 FriendlyByteBuf
+$env:JAVA_HOME = 'C:\BianChengJA\JDK\JDK25'      # 26.x 分支用 JDK25（paper-api class 主版本 69）
+powershell -ExecutionPolicy Bypass -File verify\run-verify.ps1
 # → checks run : 101 / failures : 0 / RESULT: ALL BYTE CHECKS PASSED
 # → ACCEPT 16 个 e33chat:*（含负面对照 REJECT: Channel must contain : separator）
+# → checks run : 76  / failures : 0 / RESULT: ALL GROUP/ACTION FLOW CHECKS PASSED
+# → overall exit code = 0
 ```
 
+> 阶段 1（字节比对）在本分支跑的是 **yarn 1.21.11 的 `PacketByteBuf`**（校验器 import 的就是这个名字）——
+> 26.x 客户端用的是 mojmap 的 `FriendlyByteBuf`。两者原语语义已用 javap 核对一致
+> （`writeUUID` = 两个 `writeLong`、`writeBoolean` = netty 单字节、`writeUtf` -> `Utf8String.write`
+> = VarInt 字节长度 + UTF-8），且阶段 3 已与 paper-api 26.x 一起跑通；阶段 2/3 各分支都能直接跑。
+
+第三阶段的 76 项覆盖的是**行为**（不是字节）：建群只把勾选的人放进 pending、accept 才进群、
+未受邀者伪造 accept 无效、仅创建者能邀请/解散、任何成员能改名/踢人但创建者不可被踢、
+群消息 relay 含发送者且 msgHash 会归一化、非成员收发一律丢弃、动作不回给发送者、
+三种 scope 的收件人集合、未知 `verbId` / 空正文被拒。
 ## 构建
 
 本机固定用工作区里的 Gradle 发行版与共享缓存：
@@ -176,7 +187,7 @@ $env:JAVA_HOME = 'C:\BianChengJA\JDK\JDK25'   # paper-api 26.x 的 class 主版�
 & 'C:\AI\ds harness\工作区\聊天mod移植1.21.11\gradle-dist\gradle-9.8.2\bin\gradle.bat' --no-daemon --console=plain build
 ```
 
-产物：`build/libs/E33ChatPaper-26.3-3.1.0.jar`（**53,067 字节**，`paper-api` 是 `compileOnly`，不打进 jar）。
+产物：`build/libs/E33ChatPaper-26.3-3.1.0.jar`（**53,059 字节**，`paper-api` 是 `compileOnly`，不打进 jar）。
 
 | 项目 | 值 |
 |---|---|
@@ -413,7 +424,8 @@ src/main/java/com/niuqu/chatbubble/paper/
     PlayerActionRelay.java                     # 动作范围校验 + 广播（不回发送者）
 verify/
     com/niuqu/chatbubble/paper/CodecByteCheck.java  # 与原版 PacketByteBuf 的逐字节比对（101 项）
+    com/niuqu/chatbubble/paper/GroupFlowCheck.java  # 假玩家驱动群聊/动作状态机（76 项）
     probe/ChannelProbe.java                    # 用 paper-api 自己的校验器验通道名
-    run-verify.ps1                             # 一键跑上面的比对（ASCII-only，免 BOM 问题）
+    run-verify.ps1                             # 一键跑上面三阶段（ASCII-only，免 BOM 问题）
 ```
 
