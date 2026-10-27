@@ -93,7 +93,7 @@ E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-a
 - 👤 **Head actions** — Right-click **another player's** head to open the interaction-action menu (pat / poke / pinch / kick / rub / spray / hug / blow / custom); left-click to @ them
 - 👥 **Group chat** — Server-relayed group conversations: create a group from the sidebar, invite online players, accept / decline from a banner, group rows with 3×3 avatar tiles, unread dot and per-group do-not-disturb, plus group settings (rename / add members / kick / disband / leave)
 - ✋ **Interaction actions** — 8 built-in verbs plus a one-shot custom verb, rendered as a centered system line; the audience follows the current conversation (public / group / whisper) and never leaks across views
-- 🎵 **Music capsule** — With DangoMusic installed the notification island shows cover / title / artist / progress for the current track; while the chat panel is open the capsule is placed **below** the panel so it never covers the newest messages
+- 🎵 **Music capsule** — With DangoMusic installed the notification island shows cover / title / artist / playback time (`1:26 / 3:35`) for the current track (no progress bar since 3.1.1); while the chat panel is open the capsule is placed **below** the panel so it never covers the newest messages
 - 🚫 **Block players** — A blocked player's messages vanish completely (vanilla chat / bubbles / banners / sounds); blocking takes effect instantly and purges their history, never restored on rejoin; manage the list in Settings → Chat → Blocked List (exact names, comma-separated)
 - 🔔 **Notification banner** — Slide-in popup at the top covering @ / quote / whisper / system (system banner on by default); master volume slider with per-type toggles
 - 🗨️ **Vanilla chat box** — No custom HUD preview anymore; the vanilla chat renders as usual (shifted up clear of the HUD icon), so ChatHeads / ChatAnimation-style mods work out of the box
@@ -162,7 +162,7 @@ E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-a
 - Optional "require @ prefix"
 - Advanced: self-@ / self-quote / self-whisper notification toggles (off by default, for testing)
 - A master volume slider controls every notification sound
-- **DangoMusic integration** — when DangoMusic is installed the notification island carries a music capsule (cover / title / artist / progress). It stays while a track plays, fades out ~1.5 s after pausing, and — while the chat panel is open — is drawn **below** the panel so it no longer covers the newest messages. Toggle: Settings → *Notifications* → *Banners*
+- **DangoMusic integration** — when DangoMusic is installed the notification island carries a music capsule (cover / title / artist / playback time). It stays while a track plays, fades out ~1.5 s after pausing, and — while the chat panel is open — is drawn **below** the panel so it no longer covers the newest messages. Toggle: Settings → *Notifications* → *Banners*
 
 ---
 
