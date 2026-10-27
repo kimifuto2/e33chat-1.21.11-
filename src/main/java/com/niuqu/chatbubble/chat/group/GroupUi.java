@@ -7,6 +7,7 @@ import com.niuqu.chatbubble.render.SkinResolver;
 import com.niuqu.chatbubble.render.UiTokens;
 import com.niuqu.chatbubble.texture.ColoredTextureRenderer;
 import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.components.EditBox;
 import com.niuqu.chatbubble.render.UiCanvas;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
@@ -113,6 +114,39 @@ public final class GroupUi {
     public static void rowHighlight(UiCanvas g, int x, int y, int w, int h) {
         RoundRectRenderer.fill(g, x, y, x + w, y + h, 5f,
             ChatBubbleTheme.alphaBlend(colors().popupHover(), 0xFF));
+    }
+
+    /**
+     * 输入框文字行的顶部相对**底框顶**的偏移 —— 让文字在 {@link #fieldBox} 画的框内**垂直居中**。
+     *
+     * <p>为什么需要它（26.3 {@code javap -c EditBox.updateTextPosition} 取证）：
+     * <pre>
+     *   textY = bordered ? getY() + (height - 8) / 2 : getY();
+     * </pre>
+     * 本模组的输入框一律 {@code setBordered(false)}（底框由 {@link #fieldBox} 自己画），
+     * 于是 {@code textY} **恒等于** {@code getY()}，控件不会自己做垂直居中 —— 居中只能由
+     * 我们传给 {@code setY} 的值补偿（同一个坑与 1.21.11 分支的 {@code TextFieldWidget}、
+     * {@code ui/PlayerActionCustomPopup} 的 {@code INPUT_TEXT_OFFSET} 同源）。
+     *
+     * <p>公式与"有边框时原版自己的居中"等价：{@code (boxH - lineHeight + 1) / 2}。
+     * 默认 {@code lineHeight = 9}，即 boxH 20 → 6（原版 {@code (20-8)/2 = 6}）、boxH 14 → 3。
+     *
+     * @param boxH {@link #fieldBox} 画的底框高度（**不是**控件自身 height）
+     */
+    public static int fieldTextOffset(Font tr, int boxH) {
+        return Math.max(0, (boxH - tr.lineHeight + 1) / 2);
+    }
+
+    /**
+     * 把输入框的文字行落到「底框内垂直居中」的 y（x / 宽度各调用点按自己的左右留白设置）。
+     *
+     * <p>所有群聊二级界面（新建群聊 / 群设置 / 添加玩家）的输入框都必须走这里，
+     * 否则每个 {@code setY(boxTop + 4)} 都会让文字比中线高 2px —— 看起来就是"文字贴框顶、
+     * 下方留白更大"。
+     */
+    public static void centerFieldText(EditBox field, Font tr, int boxTop, int boxH) {
+        if (field == null) return;
+        field.setY(boxTop + fieldTextOffset(tr, boxH));
     }
 
     /** 输入框圆角底（外圈 5 + 内圈 4，与聊天面板输入框同一套弧度）。 */
