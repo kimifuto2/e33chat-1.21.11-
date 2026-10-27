@@ -20,9 +20,10 @@ import java.util.List;
 /**
  * 灵动岛 × DangoMusic 联动胶囊。
  *
- * <p>与 {@link MentionNotificationBanner}（@ 横幅）同高（{@value #H}）、同位置（顶部居中，
- * 含 bannerOffsetX/Y 与 Jade 避让），独立一层：先画本岛，@ 横幅再按
- * {@link #stackShift()} 下移，两者不会重叠。
+ * <p>与 {@link MentionNotificationBanner}（@ 横幅）同位置（顶部居中，含 bannerOffsetX/Y 与
+ * Jade 避让）、宽度口径一致，高度略矮（{@value #H}，@ 横幅为 36）—— 本岛没有底部进度条，
+ * 只留封面/曲名/艺术家/时间，所以不再为进度条预留底部内边距。独立一层：先画本岛，@ 横幅
+ * 再按 {@link #stackShift()} 下移，两者不会重叠。
  *
  * <p>状态机（时间常数照抄 @ 横幅的常量，观感一致）：
  * <ul>
@@ -38,8 +39,11 @@ public final class MusicIslandBanner {
 
     public static final MusicIslandBanner INSTANCE = new MusicIslandBanner();
 
-    /** 与 @ 横幅同高。 */
-    private static final int H = 36;
+    /**
+     * 胶囊高度：内容只有「封面 24 + 上下各 4」/「两行文字 20 + 上下各 6」，
+     * 两者都以 16 为垂直中心，因此取 32（不再为底部进度条留出 3px + 间隙）。
+     */
+    private static final int H = 32;
     /** 宽度自适应：与 @ 横幅一致（头像位 + 文本区 + 右内边距），短标题不会撑成大胶囊。 */
     private static final int MIN_W = 120;
     private static final int COVER = 24;
@@ -53,8 +57,6 @@ public final class MusicIslandBanner {
     private static final int MAX_W = TEXT_X + MAX_TEXT_W + PAD_R;
     private static final int LINE1_Y = 6;
     private static final int LINE2_DY = 11;
-    /** 进度条高度（贴胶囊底部）。 */
-    private static final int BAR_H = 3;
     /** 播放中：每次 poll 把常驻期续到这个时刻之后。 */
     private static final long HOLD_MS = 1500L;
     /** 淡入时长（与 @ 横幅 POPUP_OPEN_MS 一致）。 */
@@ -201,8 +203,6 @@ public final class MusicIslandBanner {
                 g.drawText(tr, time, x + w - PAD_R - timeW, line2Y, subColor, false);
             }
         }
-
-        drawProgress(g, np.posMs(), np.durationMs(), x, iy, w, theme);
     }
 
     /** 封面：有纹理就圆角贴图，没有就占位块 + 手绘八分音符（不依赖字体是否含 ♪）。 */
@@ -226,27 +226,6 @@ public final class MusicIslandBanner {
         g.fill(cx + 15, cy + 6, cx + 19, cy + 8, noteColor);
     }
 
-    /** 底部 3px 进度条：底条 0x44FFFFFF，填充用主题强调色；duration<=0 时整条不画。 */
-    private void drawProgress(DrawContext g, long posMs, long durationMs,
-                              int x, int y, int w, ChatBubbleTheme.Colors theme) {
-        if (durationMs <= 0L) return;
-        int x1 = x + PAD_L;
-        int x2 = x + w - PAD_L;
-        int y1 = y + H - BAR_H;
-        int y2 = y + H;
-        if (x2 <= x1) return;
-
-        int trackAlpha = (int) (0x44 * alpha);
-        g.fill(x1, y1, x2, y2, (trackAlpha << 24) | 0x00FFFFFF);
-
-        float ratio = Math.max(0f, Math.min(1f, (float) ((double) posMs / (double) durationMs)));
-        int filled = Math.round((x2 - x1) * ratio);
-        if (filled <= 0) return;
-        int accent = theme.iconHover();
-        int accentAlpha = (int) ((accent >>> 24) * alpha);
-        g.fill(x1, y1, x1 + filled, y2, (accentAlpha << 24) | (accent & 0x00FFFFFF));
-    }
-
     private static String joinArtists(List<String> artists) {
         if (artists == null || artists.isEmpty()) return "";
         if (artists.size() == 1) return artists.get(0) == null ? "" : artists.get(0);
@@ -259,7 +238,7 @@ public final class MusicIslandBanner {
         return sb.toString();
     }
 
-    /** {@code 1:23 / 3:45}；时长未知时返回空串（不画时间也不画进度）。 */
+    /** {@code 1:23 / 3:45}；时长未知时返回空串（不画时间）。 */
     private static String formatTime(long posMs, long durationMs) {
         if (durationMs <= 0L) return "";
         return clock(posMs) + " / " + clock(durationMs);
