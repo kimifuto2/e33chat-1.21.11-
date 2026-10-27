@@ -156,14 +156,23 @@ Fabric 客户端 --C2S e33chat:player_action--> PlayerActionRelay --S2C player_a
 
 同一脚本的第二阶段还用 **paper-api 自己的 `StandardMessenger.validateAndCorrectChannel`** 逐个校验
 16 个通道名（注册非法通道名会让 `registerIncomingPluginChannel` 抛异常 → 插件在 `onEnable` 里自杀，
-所以这不是装饰性检查）：
+所以这不是装饰性检查）；第三阶段用 `java.lang.reflect.Proxy` 造出**假玩家/假服务端**，把
+`GroupRegistry` / `PlayerActionRelay` 的状态机**真跑一遍**（不需要服务器、不需要客户端）：
 
 ```powershell
 $env:JAVA_HOME = 'C:\BianChengJA\JDK21'      # 26.3 / 26.2 分支换成 JDK25
 powershell -ExecutionPolicy Bypass -File verify\run-verify.ps1
 # → checks run : 101 / failures : 0 / RESULT: ALL BYTE CHECKS PASSED
 # → ACCEPT 16 个 e33chat:*（含负面对照 REJECT: Channel must contain : separator）
+# → checks run : 76  / failures : 0 / RESULT: ALL GROUP/ACTION FLOW CHECKS PASSED
+# → overall exit code = 0
 ```
+
+第三阶段的 76 项覆盖的是**行为**（不是字节）：建群只把勾选的人放进 pending、accept 才进群、
+未受邀者伪造 accept 无效、仅创建者能邀请/解散、任何成员能改名/踢人但创建者不可被踢、
+群消息 relay 含发送者且 msgHash 会归一化、非成员收发一律丢弃、动作不回给发送者、
+三种 scope 的收件人集合、未知 `verbId` / 空正文被拒。所有发出去的包都用本插件自己的
+`McCodec.Reader` 解码回来断言字段（顺带验证「编码器写出的东西能被同一套解码器读回」）。
 
 ## 构建
 
@@ -403,7 +412,8 @@ src/main/java/com/niuqu/chatbubble/paper/
     PlayerActionRelay.java                     # 动作范围校验 + 广播（不回发送者）
 verify/
     com/niuqu/chatbubble/paper/CodecByteCheck.java  # 与原版 PacketByteBuf 的逐字节比对（101 项）
+    com/niuqu/chatbubble/paper/GroupFlowCheck.java  # 假玩家驱动群聊/动作状态机（76 项）
     probe/ChannelProbe.java                    # 用 paper-api 自己的校验器验通道名
-    run-verify.ps1                             # 一键跑上面的比对（ASCII-only，免 BOM 问题）
+    run-verify.ps1                             # 一键跑上面三阶段（ASCII-only，免 BOM 问题）
 ```
 
