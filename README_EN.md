@@ -7,15 +7,15 @@
 </p>
 
 <p align="center">
-  <img alt="MC" src="https://img.shields.io/badge/MC-1.20.1--1.21.1-green">
+  <img alt="MC" src="https://img.shields.io/badge/MC-1.20.1--1.21.11-green">
   <img alt="Loader" src="https://img.shields.io/badge/Loader-Forge%20%7C%20NeoForge%20%7C%20Fabric-orange">
   <img alt="Side" src="https://img.shields.io/badge/Side-Client%20required,%20server%20optional-blue">
   <img alt="Java" src="https://img.shields.io/badge/Java-17%2B%20%7C%2021%2B-yellow">
-  <img alt="Version" src="https://img.shields.io/badge/Version-2.3.7-informational">
+  <img alt="Version" src="https://img.shields.io/badge/Version-3.1.0-informational">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-brightgreen">
 </p>
 
-E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-app style: bubbles with heads, @ mentions, a whisper sidebar, search, emoji & quick phrases, quote reply, notification banners, local chat history, and a fully reworked settings screen.
+E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-app style: bubbles with heads, @ mentions, a whisper sidebar, **group chat**, **player interaction actions**, search, emoji & quick phrases, quote reply, notification banners, local chat history, and a fully reworked settings screen.
 
 ---
 
@@ -27,6 +27,8 @@ E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-a
 - [Features](#features)
 - [Chat bubbles & message display](#chat-bubbles--message-display)
 - [Whisper sidebar](#whisper-sidebar)
+- [Group chat](#group-chat)
+- [Player interaction actions](#player-interaction-actions)
 - [Mentions & notifications](#mentions--notifications)
 - [Search, emoji & quick phrases](#search-emoji--quick-phrases)
 - [Themes & settings](#themes--settings)
@@ -49,12 +51,12 @@ E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-a
 
 | Dependency | Type | Notes |
 |---|---|---|
-| Minecraft | Required | 1.20.1 (Forge) / 1.21.1 (NeoForge / Fabric) |
-| Java | Required | 17+ (Forge 1.20.1) / 21+ (1.21.1) |
+| Minecraft | Required | 1.20.1 (Forge) / 1.21.1 (NeoForge / Fabric) / 1.21.11 (Fabric) |
+| Java | Required | 17+ (Forge 1.20.1) / 21+ (1.21.1 and Fabric 1.21.11) / 25+ (MC 26.x builds) |
 | Forge | Per platform | 47.0.0+ (1.20.1) |
 | NeoForge | Per platform | 21.x (1.21.1) |
-| Fabric Loader | Per platform | 0.16.0+ (1.21.1) |
-| Fabric API | Per platform | Any compatible version (1.21.1) |
+| Fabric Loader | Per platform | 0.16.0+ (1.21.1) / 0.20.1+ (Fabric 1.21.11 line) |
+| Fabric API | Per platform | Any compatible version |
 | CustomSkinLoader | Optional | Shows offline players' heads |
 
 ---
@@ -88,7 +90,10 @@ E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-a
 - 😊 **Emoji & kaomoji** — Emoji panel + kaomoji picker, inserted at the cursor
 - 📌 **Quick phrases** — Save common phrases and fill them with one click
 - 📋 **Copy & quote reply** — Right-click a message to copy or quote-reply
-- 👤 **Head actions** — Right-click a head to whisper / teleport / block, left-click to @
+- 👤 **Head actions** — Right-click **another player's** head to open the interaction-action menu (pat / poke / pinch / kick / rub / spray / hug / blow / custom); left-click to @ them
+- 👥 **Group chat** — Server-relayed group conversations: create a group from the sidebar, invite online players, accept / decline from a banner, group rows with 3×3 avatar tiles, unread dot and per-group do-not-disturb, plus group settings (rename / add members / kick / disband / leave)
+- ✋ **Interaction actions** — 8 built-in verbs plus a one-shot custom verb, rendered as a centered system line; the audience follows the current conversation (public / group / whisper) and never leaks across views
+- 🎵 **Music capsule** — With DangoMusic installed the notification island shows cover / title / artist / progress for the current track; while the chat panel is open the capsule is placed **below** the panel so it never covers the newest messages
 - 🚫 **Block players** — A blocked player's messages vanish completely (vanilla chat / bubbles / banners / sounds); blocking takes effect instantly and purges their history, never restored on rejoin; manage the list in Settings → Chat → Blocked List (exact names, comma-separated)
 - 🔔 **Notification banner** — Slide-in popup at the top covering @ / quote / whisper / system (system banner on by default); master volume slider with per-type toggles
 - 🗨️ **Vanilla chat box** — No custom HUD preview anymore; the vanilla chat renders as usual (shifted up clear of the HUD icon), so ChatHeads / ChatAnimation-style mods work out of the box
@@ -115,6 +120,34 @@ E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-a
 - Search box to filter players
 - Public / whisper split view; the public tab shows the latest line
 - Hide list: wildcard patterns to drop NPCs / bots from the list
+- Offline players you have whispered before stay in the list (grey dot)
+- Vanilla `/msg`, `/tell`, `/w` and `whispers to you:` lines are recognised and filed into the matching whisper conversation
+
+---
+
+## Group chat
+
+> Group chat is **relayed by the server**: the server keeps the groups and forwards messages, the client never connects peer-to-peer. It therefore needs E33Chat installed on the server as well (Fabric server mod; the Paper plugin has no group backend yet). Everyone in a group must run E33Chat.
+
+- **Create** — the **`+`** button next to the sidebar search box opens a centered "New group" panel: group name (optional, falls back to `【Group】`), a tick-list of online players, then *Done* / *Cancel*
+- **Invite → accept / decline** — ticked players get a `X invited you to the group 【name】` banner plus an in-conversation row with **Accept** / **Decline** buttons; the creator is notified either way
+- **Group rows** — WeChat-style: member heads (>4 members: up to nine in a 3×3 grid, 2–4: 2×2, 1: a single head), group name, last-message preview, unread dot, and a purple moon for a muted group
+- **Messages** — exactly the same bubble pipeline as whispers (colors / heads / quotes / images / emoji / text selection / scrolling); unread and do-not-disturb behave like whispers (a muted group still counts unread)
+- **Group settings** — the gear left of the title-bar close button: rename, add players (with member search), kick a row, disband (creator only, two-step confirm) / leave (non-creator); changes are broadcast as a group sync and refresh instantly
+- **Roles** — inviting and disbanding are creator-only; renaming and kicking are open to every member
+- **Toggle** — Settings → *Sidebar* → *Whisper* → *Group chat* (on by default; turning it off only hides the entry points, messages already received still land in history)
+
+---
+
+## Player interaction actions
+
+- **Right-click another player's head** (public / group / whisper views all work) to open an action menu anchored on that head: **pat / poke / pinch / kick / rub / spray / hug / blow**, plus a **Custom** row at the bottom
+- *Custom* takes a one-off verb (≤ 12 characters, never saved); it always degrades to plain chat so ordinary chat can never be mistaken for an action
+- Selecting a verb puts a short prefix in the input box; type the body and press Enter
+- Actions render as a **centered system line** — `A pats B: text` — with no bubble, no banner, no sound and by default no de-duplication
+- The audience follows the **current conversation**: public → whole server, group → that group's members, whisper → just the two of you; actions never leak into another view
+- With the server mod installed the verb text is taken from a server-side table, so a client cannot forge verbs; without the server mod an action is sent as ordinary chat and the receiving clients re-render it as the same system line (known verbs only, so normal chat is never affected)
+- Paper servers do not relay actions yet — they take the plain-chat fallback path
 
 ---
 
@@ -129,6 +162,7 @@ E33Chat is a chat-enhancement mod that rebuilds the vanilla chat HUD in a chat-a
 - Optional "require @ prefix"
 - Advanced: self-@ / self-quote / self-whisper notification toggles (off by default, for testing)
 - A master volume slider controls every notification sound
+- **DangoMusic integration** — when DangoMusic is installed the notification island carries a music capsule (cover / title / artist / progress). It stays while a track plays, fades out ~1.5 s after pausing, and — while the chat panel is open — is drawn **below** the panel so it no longer covers the newest messages. Toggle: Settings → *Notifications* → *Banners*
 
 ---
 
@@ -180,6 +214,8 @@ The server mod is optional. Installing it additionally enables:
 
 - Server-side quote pending & sync
 - Cross-client @ mention sync (Chinese names included)
+- **Group chat relay** — group creation, invitations, membership, message fan-out and permission checks
+- **Player action relay** — validated action messages (server-side verb table, so verbs cannot be forged) with the audience resolved by scope
 - New players receive recent chat history on join
 - `use_tpa`: head teleport uses `/tpa` instead
 - Message-format templates: the server declares its chat format and syncs it to every client (see below)
@@ -272,6 +308,8 @@ An empty template list disables templates and falls back to the guards — every
     - A decoration containing a separator (e.g. a colon in a title) may truncate the name — change the separator or reorder the template
     - A completely unknown new player (never seen online) whispering cannot resolve the name and falls back to the guards
     - `{prefix}` adjacent to `{display_name}` without an anchor is absorbed into the display name (same behavior as the guard path)
+11. Group chat is server-relayed and needs E33Chat on the server too — **Paper servers are not supported yet** (they have no group backend and do not relay actions)
+12. Custom channels are declared during the configuration phase, so the **first** connection to a remote E33Chat server does not have group chat yet; reconnect once and it works (single-player / LAN / localhost work on the first join)
 
 ---
 
@@ -291,7 +329,7 @@ An empty template list disables templates and falls back to the guards — every
 
 ### Is the server mod required?
 
-No. Installing it additionally unlocks quote sync, @ mention sync, chat-history sync for new players, and head teleport via `/tpa`.
+No. Installing it additionally unlocks quote sync, @ mention sync, chat-history sync for new players, head teleport via `/tpa`, **group chat** and **server-validated player actions**. Without it, group chat stays hidden and actions fall back to ordinary chat.
 
 ### How do I open settings?
 
@@ -365,20 +403,26 @@ Yes, no extra permission needed.
 git clone https://github.com/E33EPUS/E33Chat.git
 cd E33Chat
 
-# Forge 1.20.1 (default branch)
+# Fabric 1.21.11 (main — group chat + player actions live here)
 ./gradlew build
+
+# Forge 1.20.1
+git checkout Forge-1.20.1 && ./gradlew build
 
 # NeoForge 1.21.1
-git checkout Neoforge-1.21.1
-./gradlew build
+git checkout Neoforge-1.21.1 && ./gradlew build
 
 # Fabric 1.21.1
-git checkout Fabric-1.21.1
-./gradlew build
+git checkout Fabric-1.21.1 && ./gradlew build
+
+# Minecraft 26.x (year-based versions) — Fabric
+git checkout mc26.3   # or mc26.2
+./gradlew build       # needs JDK 25 and Gradle 9.8+
 ```
 
 - Forge 1.20.1: Java 17+, supports `--offline`
-- NeoForge 1.21.1 / Fabric 1.21.1: Java 21+
+- NeoForge 1.21.1 / Fabric 1.21.1 / Fabric 1.21.11: Java 21+
+- Minecraft 26.2 / 26.3 branches: JDK 25 and Gradle 9.8.2 (no Yarn mappings — official Mojang mappings)
 - Run tests: `./gradlew cleanTest test --offline -PrunTests`
 
 ---
