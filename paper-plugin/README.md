@@ -13,7 +13,9 @@ Fabric 客户端 --C2S e33chat:player_action--> PlayerActionRelay --S2C player_a
 ```
 
 服务端做的事：解码自定义载荷 → 维护**服务端权威**的群状态（群名/创建者/成员/pending 邀请）→
-按范围广播编码后的载荷。不碰世界数据/实体/命令树，所以同一套线格式可以直接搬到 Bukkit 的插件通道 API 上。
+按范围广播编码后的载荷。群状态**落盘到 `<主世界>/serverconfig/e33chat-groups.json`**
+（与 Fabric 端同一路径、同一 JSON 结构，重启不丢群）。不碰世界数据/实体/命令树，所以同一套线格式
+可以直接搬到 Bukkit 的插件通道 API 上。
 
 > **版本配对**：插件 3.1.0 对应客户端 **3.1.0**。群聊与动作是 3.1.0 新增的协议，3.0.x 客户端不认识
 > 这些通道（会安全丢弃，不会踢人，但功能不生效）。3.0.x 的引用/@提及功能在 3.1.0 插件上照旧可用。
@@ -164,15 +166,22 @@ $env:JAVA_HOME = 'C:\BianChengJA\JDK21'      # 26.3 / 26.2 分支换成 JDK25
 powershell -ExecutionPolicy Bypass -File verify\run-verify.ps1
 # → checks run : 101 / failures : 0 / RESULT: ALL BYTE CHECKS PASSED
 # → ACCEPT 16 个 e33chat:*（含负面对照 REJECT: Channel must contain : separator）
-# → checks run : 76  / failures : 0 / RESULT: ALL GROUP/ACTION FLOW CHECKS PASSED
+# → checks run : 107 / failures : 0 / RESULT: ALL GROUP/ACTION FLOW CHECKS PASSED
 # → overall exit code = 0
 ```
 
-第三阶段的 76 项覆盖的是**行为**（不是字节）：建群只把勾选的人放进 pending、accept 才进群、
+第三个阶段的前 76 项覆盖的是**行为**（不是字节）：建群只把勾选的人放进 pending、accept 才进群、
 未受邀者伪造 accept 无效、仅创建者能邀请/解散、任何成员能改名/踢人但创建者不可被踢、
 群消息 relay 含发送者且 msgHash 会归一化、非成员收发一律丢弃、动作不回给发送者、
 三种 scope 的收件人集合、未知 `verbId` / 空正文被拒。所有发出去的包都用本插件自己的
 `McCodec.Reader` 解码回来断言字段（顺带验证「编码器写出的东西能被同一套解码器读回」）。
+
+后 31 项是**持久化**（用临时目录当世界目录，真跑「保存 → 模拟重启 → 读回」）：
+文件不存在=空且不创建文件、建群后立刻写盘、原子写的 `.tmp` 不残留、JSON 字段名与 Fabric 一致
+`id/name/creator/members/uuid`、中文与 `<&>` 原样落盘（对应 Gson `disableHtmlEscaping`）、
+pending 邀请跨重启存活且登录时补发、接受/改名/踢人/解散在重启后各自保持（解散不复活）、
+能读 Fabric 写出来的文件（无 `pendingInvites` 键、`creator` 为空串、空成员群被跳过）、
+未知顶层键被忽略、坏文件只记日志不崩不覆盖、**保存失败时旧文件逐字节不变而内存态照常更新**。
 
 ## 构建
 
@@ -184,7 +193,7 @@ $env:JAVA_TOOL_OPTIONS = '-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7899 -Dhtt
 & 'C:\AI\ds harness\工作区\聊天mod移植1.21.11\gradle-dist\gradle-9.5.1\bin\gradle.bat' --no-daemon --console=plain build
 ```
 
-产物：`build/libs/E33ChatPaper-1.21.11-3.1.0.jar`（约 52 KB，`paper-api` 是 `compileOnly`，不打进 jar）。
+产物：`build/libs/E33ChatPaper-1.21.11-3.1.0.jar`（**66,855 字节**，`paper-api` 是 `compileOnly`，不打进 jar）。
 （26.3 / 26.2 分支的同名工程分别产出 `E33ChatPaper-26.3-3.1.0.jar` / `E33ChatPaper-26.2-3.1.0.jar`，
 它们是**同一套** `src/main/java`，只有 `build.gradle` 的 paper-api 坐标、JDK 版本与
 `paper-plugin.yml` 的 `api-version` 不同。）
@@ -195,12 +204,16 @@ $env:JAVA_TOOL_OPTIONS = '-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=7899 -Dhtt
 ## 安装与测试
 
 1. 把 `build/libs/E33ChatPaper-1.21.11-3.1.0.jar` 放进 Paper 1.21.11 服务器的 `plugins/`，重启服务器。
-2. 服务器日志应出现（3 行：一行摘要 + 两行完整通道清单）：
+2. 服务器日志应出现（4 行：群状态文件路径 + 一行摘要 + 两行完整通道清单）：
    ```
-   [E33Chat] E33ChatPaper enabled | in=10 | out=6 | dedupeWindow=10000ms | mentions=on(AsyncChatEvent) | groups=on(in-memory, invites=pending) | actions=on(verbs=8, scopes=public/group/private)
+   [E33Chat] group store file = C:\...\world\serverconfig\e33chat-groups.json
+   [E33Chat] E33ChatPaper enabled | in=10 | out=6 | dedupeWindow=10000ms | mentions=on(AsyncChatEvent) | groups=on(persisted, invites=pending) | actions=on(verbs=8, scopes=public/group/private)
    [E33Chat] channels in  = e33chat:quote_sync, e33chat:group_create, e33chat:group_message, e33chat:group_invite, e33chat:group_invite_respond, e33chat:group_kick, e33chat:group_leave, e33chat:group_rename, e33chat:group_disband, e33chat:player_action
    [E33Chat] channels out = e33chat:chat_meta, e33chat:group_sync, e33chat:group_message_relay, e33chat:group_event, e33chat:group_invite_event, e33chat:player_action_relay
    ```
+   紧随其后还有一行群状态加载结果（首次开服是 `store ready (no file yet)`，之后是
+   `store loaded | groups=N | pending=M | file=...`）。若看到 `group store disabled`，说明插件加载时
+   世界目录还没就绪 —— 本次运行退化为纯内存态（重启丢群），请检查服务端日志里的世界加载顺序。
 3. 客户端白名单（决定「客户端会不会向该服声明自定义通道」）：
    - **局域网 / 私有网段地址**（127.x / 10.x / 192.168.x / 172.16-31.x）：配置阶段直接放行，**首次连接**
      就能用，不需要改任何文件。
@@ -309,14 +322,70 @@ Paper 侧实现的是 Fabric 端 `GroupRegistry` 的**同一条行为线**（不
 - 被邀请者**离线时直接忽略**（不排离线队列）—— 与 Fabric 端同一条 MVP 取舍。
 - 所有操作都在 `synchronized` 的方法里改内存态，且外层整体 try/catch：坏包/异常只记日志，
   **绝不影响连接**（Paper 里异常冒到插件消息处理器会直接断开玩家）。
+- **群状态与 pending 邀请都落盘**，每次变更立刻保存，重启后自动读回（见下一节）。
+
+### 群聊持久化（3.1.0 起）
+
+| 项目 | 值 |
+|---|---|
+| 文件路径 | `<世界根目录>/serverconfig/e33chat-groups.json`（代码里 = `getWorlds().get(0).getWorldFolder()` 的 world 根 + `serverconfig/e33chat-groups.json`；与 Fabric 的 `WorldSavePath.ROOT` 语义相同） |
+| 格式版本 | `"version": 1`（与 Fabric 同值，读取时不校验，容忍更高版本） |
+| 加载时机 | 插件 `onEnable`（世界已加载完毕）——文件不存在 = 空，**不会**顺手创建文件 |
+| 保存时机 | 建群 / 邀请发出 / 接受或拒绝邀请 / 踢人 / 退群 / 改名 / 解散 / 群空自动删除 / 登录时清理失效 pending，以及 `onDisable` 再保存一次 |
+| 写盘方式 | 先写同目录 `e33chat-groups.json.tmp`（`FileChannel.force` 刷盘）→ `Files.move(..., ATOMIC_MOVE, REPLACE_EXISTING)` 原子替换；不支持原子改名时退化为普通替换。失败只记日志，旧文件保持完整 |
+| 日志 | `group store file = <绝对路径>` / `store loaded \| groups=N \| pending=M \| file=...` / `store saved \| via=create \| groups=N \| pending=M \| bytes=N \| file=...` / 失败时 `store load failed` / `store save failed` |
+
+> 26.x 分支的差异：Paper 26.3 起世界目录变成 `<server>/world/dimensions/minecraft/overworld` 这种
+> 逐维度布局，`getWorldFolder()` 返回的是**维度目录**，而 Fabric 端 `LevelResource.ROOT` 仍是
+> `<server>/world`。代码因此按 **`level.dat` 上溯**到世界根（`findLevelRoot`），保证三个分支
+> 的落盘位置都在 `<server>/world/serverconfig/e33chat-groups.json`，和 Fabric 是同一条路径。
+> 1.21.11 上第一层就命中 `level.dat`，行为与直接用 `getWorldFolder()` 完全相同。
+
+JSON 结构与 Fabric 端**逐字段一致**（Fabric 的 `GroupRegistry.saveToDisk()` 用 Gson 写同一份）：
+
+```json
+{
+  "version": 1,
+  "groups": [
+    {
+      "id": "群 UUID",
+      "name": "群名（空串 = 未命名）",
+      "creator": "创建者 UUID（未知时是空串）",
+      "members": [
+        { "uuid": "成员 UUID", "name": "成员最后已知名字" }
+      ]
+    }
+  ],
+  "pendingInvites": [
+    { "group": "群 UUID", "players": ["还没回应邀请的玩家 UUID"] }
+  ]
+}
+```
+
+- `members` 的顺序 = 入群顺序（`LinkedHashMap`），Fabric 读回来也是同一个顺序。
+- 字段名 `id / name / creator / members / uuid` 是 Fabric Gson 的字面键，**改一个两边就不兼容**。
+- `pendingInvites` 是 Paper 的**额外顶层字段**：Fabric 的读取器只看 `groups`，多余键会被忽略，
+  所以 Paper 写出的文件 Fabric 能直接读；反过来 Fabric 保存时会把 `pendingInvites` 丢掉
+  （= pending 邀请失效，群本身不受影响）。只有「同一个世界目录先后被 Fabric 服和 Paper 服打开」
+  才会遇到这种差异。
+- 字符串按 Gson `disableHtmlEscaping` 的语义转义（`< > & = '` 不转义，只有引号/反斜杠/控制字符/
+  U+2028/U+2029 转义），中文与 emoji 以 UTF-8 原样落盘；手改文件带不带 UTF-8 BOM 都能读。
+- 读取容错与 Fabric 一致：单个群/单个成员坏掉只丢那一条，**成员表为空的群不加载**，
+  整个文件损坏只记 `store load failed` 并以空状态启动（**不会覆盖**坏文件，方便运维手工修）。
+
+> ⚠️ **这个文件是服务端机密**：里面有玩家 UUID 与群名，**不要**放进 Web 可访问目录或随整合包分发。
+> 它在**世界目录里**，所以会跟着地图存档一起备份/回档 —— 换周目/回档会连群状态一起回退；
+> 想保留群状态就单独备份这个文件。
 
 ### 已知限制
 
-- **纯内存态**：Paper 侧不落盘，**服务端重启后所有群消失**（客户端那边也收不到旧群）。
-  Fabric 端会落 `<world>/serverconfig/e33chat-groups.json`；Paper 侧有意不做持久化
-  （插件不碰世界目录、不引第三方依赖），需要持久化的服请用 Fabric 服务端。
+- **多服/跨服不共享**：文件在各自的世界目录里，Velocity/Bungee 多子服、或两台 Paper 服
+  各有一份，互相不同步；同一世界目录同时只能被一个服务端打开（`session.lock` 冲突）。
+- **Fabric 与 Paper 不要同时用同一份文件**：都能读，但 Fabric 每次保存都会丢掉 `pendingInvites`
+  这个 Paper 扩展字段（群与成员不受影响）。
 - 离线成员仍然占成员位、能收到 `group_sync` 快照，但**收不到离线期间的群消息**（无离线补发）。
-- 跨服/代理（Velocity/Bungee 多子服）不共享群状态：每个 Paper 子服各自一套内存态。
+- pending 邀请只补发**「发出去过」的邀请**：被邀请者当时离线 → 仍然直接忽略（与 Fabric 同），
+  不会在他上线时凭空生成一条邀请。
 
 ### 验现象
 
@@ -330,6 +399,10 @@ Paper 侧实现的是 Fabric 端 `GroupRegistry` 的**同一条行为线**（不
    两人气泡里都出现（发送者按 msgHash 去重，不会重复）；
 4. B 改群名 → 两人侧边栏同步改名；B 踢 A → 日志 `kick denied | target is creator`（A 是创建者）；
 5. A 解散 → 两人都收到 `DISBANDED`，侧边栏群消失。
+6. **重启服务端**（正常 `stop`，不是强杀）：日志里先是
+   `store saved | via=disable | groups=N | ...`，再启动时是 `store loaded | groups=N | pending=M | file=...`；
+   A/B 重新上线后侧边栏里的群**还在**，改名/踢人/退群的结果也都保持（解散的群不会复活）。
+7. 重启时如果 B 还没点「接受」：B 一上线会**重新收到那条邀请**（日志 `invite replayed | player=B | invites=1`）。
 
 ## 玩家动作转发（3.1.0，拍了拍等）
 
@@ -369,7 +442,10 @@ C2S `player_action` → 校验 → S2C `player_action_relay`。**不回给发送
 | 群聊功能完全不生效（无 `group_create recv`） | ① 客户端不是 3.1.0（3.0.x 不认识这些通道）；② 该服务器地址没进客户端白名单（公网地址见「安装与测试」第 3 条）；③ 其它插件抢先注册了同名通道 |
 | 建群后只有创建者一个人在群里 | 邀请是 **pending** 语义：被邀请者必须在私聊里点「接受」。看日志有没有 `invites dispatched ... sent=N`（`sent=0` 说明对方**离线**或已是成员/已在 pending） |
 | 日志有 `invite skipped (offline)` | 被邀请者不在线：Paper 端与 Fabric 端一样**不排离线队列**，需要等他上线后再邀请 |
-| 群聊在服务端重启后全没了 | 预期行为：Paper 端群状态是纯内存态（见「群聊 / 已知限制」） |
+| 群聊在服务端重启后全没了 | 先看日志有没有 `store load failed`（坏文件/无读权限 → 以空状态启动）和 `group store disabled`（加载时世界目录没就绪，本次运行纯内存）；再确认服务端是否用 `stop` 正常关闭（强杀只会丢最后一次未写盘的变化，已保存的群仍在） |
+| 日志有 `store save failed` | 世界目录不可写（磁盘满/只读/杀软占用）：内存态照常可用，但重启会回退到上一次成功保存的内容；修好写权限后随便做一次群操作即可重新落盘 |
+| 重启后群回来了但成员表是旧的 | 最后一次变更没成功落盘（看 `store save failed`）；文件是「要么旧、要么新」，不会出现半截 JSON |
+| 想手工删掉某个群 | 停服后编辑 `<world>/serverconfig/e33chat-groups.json` 再启服；手改坏了只会 `store load failed`（文件不会被覆盖），删掉该文件即恢复「没有群」 |
 | 踢人日志是 `kick denied \| target is creator` | 预期：创建者不可被踢，只能他自己退群或解散 |
 | 改名/邀请日志是 `invite denied \| actor is not creator` | 预期：只有创建者能邀请/解散；改名/踢人所有成员可以 |
 | 动作消息日志有 `rejected \| unknown verb` | 客户端发来的 `verbId` 不在 8 个内置 id 里且不是 `custom`；属预期拒绝（防伪造） |
@@ -384,7 +460,8 @@ C2S `player_action` → 校验 → S2C `player_action_relay`。**不回给发送
   - **玩家动作转发**：8 个内置动作 + 自定义词条，`public` / `group` / `private` 三种范围。
 - **未实现**：私聊消息、聊天历史记录、媒体上传、服务端配置界面 —— 这些功能在 Paper 服上退化为
   「客户端本地可用，跨玩家不联动」。
-- **群状态不持久化**（Paper 侧有意取舍，见「群聊 / 已知限制」）。
+- **群状态持久化**到 `<主世界>/serverconfig/e33chat-groups.json`（与 Fabric 同路径同结构），
+  pending 邀请也一并落盘；跨服/多服不共享，文件随世界目录备份（见「群聊 / 群聊持久化」）。
 - `mentionTargets` 只是协议字段：客户端当前的提及提醒是**扫正文**实现的，填不填都不改变提醒效果
   （详见「@提及同步 / 已知限制」）。
 - 不改 Fabric 客户端：本插件只发 S2C 载荷，字段顺序/类型与原版 `PacketByteBuf` 逐字节一致
@@ -405,14 +482,15 @@ src/main/java/com/niuqu/chatbubble/paper/
     GroupWire.java                             # 群/动作协议常量 + 夹断 + UUID 解析 + hash 归一化
     GroupInbound.java                          # C2S group_* 8 条解码（记录类型 + 降级）
     GroupOutbound.java                         # S2C group_* 4 条编码
-    GroupRegistry.java                         # 群状态机（成员/创建者/pending 邀请/广播）
+    GroupRegistry.java                         # 群状态机（成员/创建者/pending 邀请/广播/落盘时机）
+    GroupStore.java                            # 落盘层：<world>/serverconfig/e33chat-groups.json（JSON + 原子写）
     PlayerActionPayloads.java                  # C2S player_action 解码 + S2C relay 编码
     PlayerActionVerbs.java                     # 8 个动作的权威词条表 + 清洗
     PlayerActionScope.java                     # public / group / private
     PlayerActionRelay.java                     # 动作范围校验 + 广播（不回发送者）
 verify/
     com/niuqu/chatbubble/paper/CodecByteCheck.java  # 与原版 PacketByteBuf 的逐字节比对（101 项）
-    com/niuqu/chatbubble/paper/GroupFlowCheck.java  # 假玩家驱动群聊/动作状态机（76 项）
+    com/niuqu/chatbubble/paper/GroupFlowCheck.java  # 假玩家驱动群聊/动作状态机 + 持久化（107 项）
     probe/ChannelProbe.java                    # 用 paper-api 自己的校验器验通道名
     run-verify.ps1                             # 一键跑上面三阶段（ASCII-only，免 BOM 问题）
 ```

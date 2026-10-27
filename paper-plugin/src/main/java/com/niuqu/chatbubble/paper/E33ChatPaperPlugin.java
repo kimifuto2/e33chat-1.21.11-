@@ -2,6 +2,7 @@ package com.niuqu.chatbubble.paper;
 
 import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -11,6 +12,9 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.messaging.Messenger;
 import org.bukkit.plugin.messaging.PluginMessageListener;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -86,8 +90,9 @@ public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessag
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
-        // 群聊后端是纯内存态（重启丢群），这里把状态挂到本插件实例上，卸载时统一清空。
-        GroupRegistry.init(this);
+        // 群聊后端落盘到 <主世界>/serverconfig/e33chat-groups.json（与 Fabric 端同一路径、同一结构），
+        // onEnable 时加载（文件不存在=空），每次群状态变更后保存。世界目录不可用时退化为纯内存态。
+        GroupRegistry.init(this, resolveGroupStore());
         // 聊天事件监听：@提及解析（Paper 1.21.x 的 AsyncChatEvent；不能用已废弃的
         // org.bukkit.event.player.AsyncPlayerChatEvent —— 在 Paper 上它不再携带完整语义）。
         // 同一个 Listener 里还挂了 PlayerJoinEvent（登录补发群快照）。
@@ -96,7 +101,8 @@ public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessag
             + " | out=" + E33Channels.OUTGOING.size()
             + " | dedupeWindow=" + QUOTE_TTL_MS + "ms"
             + " | mentions=on(" + AsyncChatEvent.class.getSimpleName() + ")"
-            + " | groups=on(in-memory, invites=pending)"
+            + " | groups=on(" + (GroupRegistry.storeFile() == null ? "in-memory" : "persisted")
+            + ", invites=pending)"
             + " | actions=on(verbs=" + PlayerActionVerbs.IDS.length + ", scopes=public/group/private)");
         // 通道清单单独打两行：排「为什么客户端的 canSend 为 false」时，一眼看到底注册了哪些。
         getLogger().info("[E33Chat] channels in  = " + String.join(", ", E33Channels.INCOMING));
@@ -122,11 +128,84 @@ public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessag
         }
         broadcastDedupe.clear();
         try {
-            GroupRegistry.reset();
+            // 先保存一次再清空内存态：正常 stop / 插件卸载后，下次启动能读回同一份群状态。
+            GroupRegistry.shutdown();
         } catch (Throwable ignored) {
             // 卸载阶段尽力而为
         }
         getLogger().info("[E33Chat] E33ChatPaper disabled");
+    }
+
+    /**
+     * 群状态的落盘文件：<b>{@code <世界根目录>/serverconfig/e33chat-groups.json}</b>。
+     *
+     * <p>「世界根目录」= 含 {@code level.dat} 的那一层（见 {@link #findLevelRoot(Path)}）：
+     * <ul>
+     *   <li>1.21.11：{@code getWorlds().get(0).getWorldFolder()} 本身就是世界根（{@code <server>/world}），
+     *       与 Fabric 端 {@code server.getSavePath(WorldSavePath.ROOT)} 一致；</li>
+     *   <li><b>26.3 起</b>：Paper/Minecraft 把每个维度拆进
+     *       {@code <server>/world/dimensions/minecraft/overworld}，{@code getWorldFolder()} 返回的
+     *       是**维度目录**；而 Fabric 端的 {@code LevelResource.ROOT} 仍是 {@code <server>/world}。
+     *       为了两边仍是同一个文件，这里按 {@code level.dat} 往上找到世界根，而不是用维度目录。</li>
+     * </ul>
+     *
+     * <p>插件在 {@code onEnable} 时世界已经加载完毕，正常情况下这里一定拿得到；
+     * 极端情况（世界列表为空 / 未初始化 / 拿不到目录）返回 {@code null} → 退化为纯内存态并告警，
+     * **绝不让异常冒出去**（onEnable 抛异常会让整个插件加载失败）。
+     */
+    private Path resolveGroupStore() {
+        try {
+            List<World> worlds = getServer().getWorlds();
+            if (worlds == null || worlds.isEmpty()) {
+                getLogger().warning("[E33Chat] group store disabled | no world loaded yet"
+                    + " (groups will be in-memory only)");
+                return null;
+            }
+            File worldFolder = worlds.get(0).getWorldFolder();
+            if (worldFolder == null) {
+                getLogger().warning("[E33Chat] group store disabled | world folder is null");
+                return null;
+            }
+            Path levelRoot = findLevelRoot(worldFolder.toPath());
+            Path file = levelRoot
+                .resolve(GroupStore.DIR_NAME)
+                .resolve(GroupStore.FILE_NAME)
+                .toAbsolutePath()
+                .normalize();
+            getLogger().info("[E33Chat] group store file = " + file
+                + " | worldFolder=" + worldFolder.getPath()
+                + (levelRoot.equals(worldFolder.toPath().toAbsolutePath().normalize())
+                    ? "" : " | levelRoot=" + levelRoot));
+            return file;
+        } catch (Throwable t) {
+            getLogger().warning("[E33Chat] group store disabled | cannot resolve world folder | "
+                + t.getClass().getSimpleName() + ": " + t.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 从 {@code getWorldFolder()} 往上找**世界根目录**（含 {@code level.dat} 的那一层）。
+     *
+     * <p>为什么不能直接用 {@code getWorldFolder()}：26.x 的世界目录改成了
+     * {@code <server>/world/dimensions/minecraft/{overworld,the_nether,the_end}} 的结构，
+     * 该 getter 返回维度目录；而 Fabric 端落盘用的是 {@code LevelResource.ROOT}（世界根）。
+     * 找 {@code level.dat} 是布局无关的判据（1.21.x 第一层就命中，26.x 往上 3 层命中），
+     * 也不用猜 {@code level-name} / 维度命名空间。
+     *
+     * <p>最多往上 4 层；都找不到（自定义布局）就退回 {@code getWorldFolder()} ——
+     * 只影响文件位置，不影响功能。
+     */
+    private static Path findLevelRoot(Path worldFolder) {
+        Path absolute = worldFolder.toAbsolutePath().normalize();
+        Path probe = absolute;
+        for (int depth = 0; depth < 4 && probe != null; depth++) {
+            if (Files.isRegularFile(probe.resolve("level.dat"))) {
+                return probe;
+            }
+            probe = probe.getParent();
+        }
+        return absolute;
     }
 
     /**
@@ -300,8 +379,9 @@ public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessag
     /**
      * 玩家登录：把该玩家所属的**全部群**补发一遍（{@code group_sync}）。
      *
-     * <p>客户端因此不需要自己持久化成员表；Paper 端群状态是内存态，重启后这里补发的就是空列表
-     * （客户端那边也会因为服务端重启而收不到旧群，属已知限制）。
+     * <p>客户端因此不需要自己持久化成员表；群状态是从 {@code <主世界>/serverconfig/e33chat-groups.json}
+     * 读回来的（见 {@link GroupStore}），所以**服务端重启后这里补发的仍然是重启前的群**。
+     * 同一方法里还会给「还没回应邀请」的玩家补发一次邀请（pending 也落盘了）。
      */
     @EventHandler(priority = EventPriority.MONITOR)
     public void onPlayerJoin(PlayerJoinEvent event) {
