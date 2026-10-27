@@ -3,6 +3,7 @@ package com.niuqu.chatbubble.paper;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -25,14 +26,21 @@ import java.util.UUID;
  *   <li>玩家登录时把他的全部群逐个补发（客户端不需要自己持久化成员表）。</li>
  * </ul>
  *
- * <p><b>状态是纯内存态</b>：Paper 侧不做落盘，服务端重启后所有群消失（README 的已知限制）。
- * 与 Fabric 端不同（那边落 {@code <world>/serverconfig/e33chat-groups.json}），这是本插件的
- * 有意取舍：插件不碰世界目录、不引入 gson 依赖，行为在当次运行内完全一致。
+ * <p><b>状态落盘</b>：与 Fabric 端同一个文件 —— <b>{@code <主世界目录>/serverconfig/e33chat-groups.json}</b>
+ * （Bukkit：{@code Bukkit.getWorlds().get(0).getWorldFolder()} 下 {@code serverconfig/}），
+ * JSON 结构与字段名逐条复刻 Fabric 的 Gson 输出，两边的文件可以互读（细节见 {@link GroupStore}）。
+ * 插件 {@code onEnable} 时加载（文件不存在 = 空），**每次群状态变更后立刻保存**，
+ * {@code onDisable} 再保存一次；写盘走「临时文件 → 原子替换」，失败只记日志、绝不影响游戏。
+ *
+ * <p>持久化是**可关的**：{@link #init(Plugin, java.nio.file.Path)} 传 {@code null} 就退化成纯内存态
+ * （世界目录还没就绪 / 单元测试），行为与 3.1.0 之前一致。
  *
  * <p><b>进群邀请是 pending 语义</b>（与 Fabric 第 4 轮一致）：建群/加人**不直接把人拉进群**，
  * 只把被邀请者记进 {@code pendingInvites} 并给他发 {@code group_invite_event}(kind=INVITE)；
- * 对方回 {@code group_invite_respond} 且 accept=true 才真正进群。pending 同样是内存态，
- * 被邀请者离线时直接忽略（不排离线队列）。
+ * 对方回 {@code group_invite_respond} 且 accept=true 才真正进群。pending **也落盘**
+ * （文件里的 {@code pendingInvites} 字段，Fabric 不认识但会忽略），因此服务端重启后
+ * 被邀请者一上线就会**重新收到那条邀请**；被邀请者离线时仍然直接忽略（不排离线队列，
+ * 与 Fabric 同一条 MVP 取舍 —— 只有「已经发出去过」的邀请才会被补发）。
  */
 final class GroupRegistry {
 
@@ -100,6 +108,17 @@ final class GroupRegistry {
             return out;
         }
 
+        /**
+         * 只给 {@link GroupStore} 反序列化用：把成员直接塞进表里（绕过在线校验）。
+         * 正常入群走 {@link #respondInvite} 的 pending 校验，不要从业务代码调它。
+         */
+        void putMember(UUID uuid, String name) {
+            if (uuid == null) {
+                return;
+            }
+            members.put(uuid, name == null ? "" : name);
+        }
+
         @Override
         public String toString() {
             return "Group{id=" + id + ", name='" + name + "', members=" + members.size()
@@ -108,14 +127,32 @@ final class GroupRegistry {
     }
 
     private static final Map<UUID, Group> groups = new LinkedHashMap<>();
-    /** groupId → 还没回应的被邀请者（纯内存态）。 */
+    /** groupId → 还没回应的被邀请者（落盘在文件的 pendingInvites 字段里，见类注释）。 */
     private static final Map<UUID, LinkedHashSet<UUID>> pendingInvites = new LinkedHashMap<>();
 
     /** 由 {@link E33ChatPaperPlugin#onEnable()} 注入；卸载时置回 null。 */
     private static Plugin plugin;
 
-    static void init(Plugin owner) {
+    /** 落盘层；{@code null} = 持久化不可用（世界目录未就绪 / 调用方显式传 null），纯内存运行。 */
+    private static GroupStore store;
+
+    /**
+     * 注入插件实例与落盘文件，并**立刻从磁盘加载**（文件不存在 = 空）。
+     *
+     * @param owner     插件实例（拿 Server / Logger）
+     * @param storeFile 落盘文件（通常是 {@code <主世界>/serverconfig/e33chat-groups.json}）；
+     *                  传 {@code null} 表示本次运行不落盘（纯内存态）
+     */
+    static synchronized void init(Plugin owner, Path storeFile) {
         plugin = owner;
+        groups.clear();
+        pendingInvites.clear();
+        store = storeFile == null ? null : new GroupStore(storeFile);
+        if (store == null) {
+            log("store disabled (in-memory only)");
+            return;
+        }
+        load();
     }
 
     /** 本插件实例（{@link PlayerActionRelay} 也用它拿 Server/Logger）—— 卸载后为 null。 */
@@ -123,17 +160,90 @@ final class GroupRegistry {
         return plugin;
     }
 
-    /** 服务器停止/插件卸载：清空内存态（下一次加载是全新的世界）。 */
+    /** 当前落盘文件；未启用持久化时为 {@code null}。 */
+    static synchronized Path storeFile() {
+        return store == null ? null : store.file();
+    }
+
+    /**
+     * 插件卸载/服务器停止：**先保存一次**，再清空内存态（下一次加载按文件重新读）。
+     *
+     * <p>与 {@link #reset()} 的区别：这个会写盘，那个不会。
+     */
+    static synchronized void shutdown() {
+        save("disable");
+        groups.clear();
+        pendingInvites.clear();
+        plugin = null;
+        store = null;
+    }
+
+    /** 只清内存态、不写盘（单元测试/异常兜底用）。 */
     static synchronized void reset() {
         groups.clear();
         pendingInvites.clear();
         plugin = null;
+        store = null;
     }
 
     private static void log(String msg) {
         Plugin p = plugin;
         if (p != null) {
             p.getLogger().info("[e33chat] srv | group | " + msg);
+        }
+    }
+
+    // ================================================================ 持久化
+
+    /** {@link #init} 之后调用一次：把磁盘上的群与 pending 邀请读进内存（坏文件只丢自己）。 */
+    private static void load() {
+        GroupStore s = store;
+        if (s == null) {
+            return;
+        }
+        try {
+            GroupStore.Snapshot snapshot = s.read();
+            for (Group g : snapshot.groups) {
+                groups.put(g.id(), g);
+            }
+            // pending 里只保留「群还在」的条目，避免手改文件留下野条目
+            for (Map.Entry<UUID, LinkedHashSet<UUID>> entry : snapshot.pending.entrySet()) {
+                if (groups.containsKey(entry.getKey()) && !entry.getValue().isEmpty()) {
+                    pendingInvites.put(entry.getKey(), entry.getValue());
+                }
+            }
+            if (snapshot.groups.isEmpty() && groups.isEmpty()) {
+                log("store ready (no file yet) | pending=" + pendingCount() + " | file=" + s.file());
+            } else {
+                log("store loaded | groups=" + groups.size() + " | pending=" + pendingCount()
+                    + " | file=" + s.file());
+            }
+        } catch (Throwable t) {
+            // 坏文件/无读权限：保持空状态继续跑（不崩、不清文件，方便运维修）
+            log("store load failed | file=" + s.file() + " | " + t.getClass().getSimpleName()
+                + ": " + t.getMessage());
+        }
+    }
+
+    /**
+     * 把当前群状态与 pending 邀请写回磁盘（**每次群状态变更后调用**）。
+     *
+     * <p>所有异常都在这里收口：写盘失败只记日志，内存态照旧可用（与 Fabric 的
+     * {@code saveToDisk} 同一条口径）。调用方必须已经持有 {@code GroupRegistry} 的对象锁
+     * —— 所有公开操作都是 {@code synchronized} 方法，所以直接调即可。
+     */
+    private static void save(String reason) {
+        GroupStore s = store;
+        if (s == null) {
+            return;
+        }
+        try {
+            int bytes = s.write(groups.values(), pendingInvites);
+            log("store saved | via=" + reason + " | groups=" + groups.size()
+                + " | pending=" + pendingCount() + " | bytes=" + bytes + " | file=" + s.file());
+        } catch (Throwable t) {
+            log("store save failed | via=" + reason + " | file=" + s.file() + " | "
+                + t.getClass().getSimpleName() + ": " + t.getMessage());
         }
     }
 
@@ -304,6 +414,7 @@ final class GroupRegistry {
 
         List<UUID> sent = deliverInvites(g, creator, payload.members());
         log("create | invites sent=" + sent.size() + " | " + g);
+        save("create");
         broadcastSync(g);
     }
 
@@ -319,6 +430,7 @@ final class GroupRegistry {
         }
         g.name = GroupWire.clamp(payload.name(), GroupWire.MAX_NAME).trim();
         log("rename | actor=" + name(actor) + " | " + g);
+        save("rename");
         broadcastSync(g);
         for (UUID uuid : g.memberIds()) {
             Player p = online(uuid);
@@ -353,6 +465,8 @@ final class GroupRegistry {
         List<UUID> sent = deliverInvites(g, actor, payload.members());
         if (sent.isEmpty()) {
             log("invite no-op | actor=" + name(actor) + " | " + g);
+        } else {
+            save("invite");
         }
     }
 
@@ -375,8 +489,8 @@ final class GroupRegistry {
         UUID me = player.getUniqueId();
         LinkedHashSet<UUID> pending = pendingInvites.get(g.id());
         if (g.hasMember(me)) {
-            if (pending != null) {
-                pending.remove(me);
+            if (pending != null && pending.remove(me)) {
+                save("invite_cleanup");
             }
             log("invite_respond ignored | already member | player=" + name(player) + " | " + g.id());
             return;
@@ -392,6 +506,7 @@ final class GroupRegistry {
         if (!payload.accept()) {
             log("invite declined | player=" + name(player) + " | group=" + g.id()
                 + " | pending=" + pending.size());
+            save("invite_decline");
             if (creator != null) {
                 sendInviteEvent(creator, g, INVITE_DECLINED, inviterName, player.getName());
             }
@@ -400,10 +515,12 @@ final class GroupRegistry {
 
         if (g.size() >= MAX_MEMBERS) {
             log("invite accept ignored | group full | player=" + name(player) + " | " + g);
+            save("invite_full");
             return;
         }
         g.members.put(me, player.getName());
         log("invite accepted | player=" + name(player) + " | " + g);
+        save("invite_accept");
         broadcastSync(g);
         // 给加入者自己一条「你已被加入群聊 xxx」（复用既有 KIND_INVITED 路径）
         sendEvent(player, g, KIND_INVITED, g.name());
@@ -441,9 +558,11 @@ final class GroupRegistry {
         if (g.members.isEmpty()) {
             groups.remove(g.id());
             pendingInvites.remove(g.id());
+            save("kick_empty");
             log("kick -> group empty, removed | " + g.id());
             return;
         }
+        save("kick");
         broadcastSync(g);
     }
 
@@ -461,9 +580,11 @@ final class GroupRegistry {
         if (g.members.isEmpty()) {
             groups.remove(g.id());
             pendingInvites.remove(g.id());
+            save("leave_empty");
             log("leave -> group empty, removed | " + g.id());
             return;
         }
+        save("leave");
         broadcastSync(g);
     }
 
@@ -484,6 +605,7 @@ final class GroupRegistry {
         }
         groups.remove(g.id());
         pendingInvites.remove(g.id());
+        save("disband");
         log("disband | actor=" + name(actor) + " | " + g);
         for (UUID uuid : g.memberIds()) {
             Player p = online(uuid);
@@ -538,6 +660,48 @@ final class GroupRegistry {
         }
         log("join sync | player=" + player.getName() + " | groups=" + mine.size()
             + " | totalGroups=" + groups.size());
+        replayPendingInvites(player);
+    }
+
+    /**
+     * 补发**还没回应**的进群邀请 —— 这是 pending 落盘之后才有意义的步骤。
+     *
+     * <p>场景：A 邀请 B，B 还没点「接受」，服务器重启了。重启后 B 上线，
+     * 客户端本来收不到任何东西（邀请按钮早没了），现在这里按磁盘上的 pendingInvites
+     * 给他重发一条 {@code group_invite_event}(kind=INVITE)，按钮就回来了。
+     *
+     * <p>顺带清理失效条目：群已经不存在、或他其实已经是成员（比如两边都接受了）→ 从 pending
+     * 里删掉，并落盘。**不改变「离线邀请被忽略」的原有语义**：pending 里只会出现
+     * 「邀请时在线、已经收到过邀请」的人。
+     */
+    private static void replayPendingInvites(Player player) {
+        if (player == null || pendingInvites.isEmpty()) {
+            return;
+        }
+        UUID me = player.getUniqueId();
+        int replayed = 0;
+        boolean cleaned = false;
+        for (Map.Entry<UUID, LinkedHashSet<UUID>> entry : pendingInvites.entrySet()) {
+            if (!entry.getValue().contains(me)) {
+                continue;
+            }
+            Group g = groups.get(entry.getKey());
+            if (g == null || g.hasMember(me)) {
+                entry.getValue().remove(me);
+                cleaned = true;
+                continue;
+            }
+            sendInviteEvent(player, g, INVITE_INVITE,
+                nameOf(g.creator(), g.creator() == null ? "" : g.members.get(g.creator())),
+                player.getName());
+            replayed++;
+        }
+        if (cleaned) {
+            save("join_cleanup");
+        }
+        if (replayed > 0) {
+            log("invite replayed | player=" + player.getName() + " | invites=" + replayed);
+        }
     }
 
     // ================================================================ 工具
