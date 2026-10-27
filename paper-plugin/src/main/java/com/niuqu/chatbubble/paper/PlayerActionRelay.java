@@ -30,7 +30,7 @@ final class PlayerActionRelay {
     }
 
     private static void log(String msg) {
-        Plugin p = E33ChatPaperPlugin.self();
+        Plugin p = GroupRegistry.plugin();
         if (p != null) {
             p.getLogger().info("[e33chat] srv | action | " + msg);
         }
@@ -40,7 +40,7 @@ final class PlayerActionRelay {
         if (sender == null || payload == null) {
             return;
         }
-        Plugin plugin = E33ChatPaperPlugin.self();
+        Plugin plugin = GroupRegistry.plugin();
         if (plugin == null) {
             return;
         }

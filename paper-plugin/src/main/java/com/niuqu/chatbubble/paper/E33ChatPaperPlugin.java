@@ -44,9 +44,6 @@ public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessag
     /** S2C：服务端广播「这条消息的引用块 / @ 列表 / 指纹」。 */
     public static final String CHANNEL_CHAT_META = E33Channels.CHAT_META;
 
-    /** 当前插件实例（{@link GroupRegistry} / {@link PlayerActionRelay} 用它拿 Server 与 Logger）。 */
-    private static E33ChatPaperPlugin instance;
-
     /** 与 Fabric 版一致的 10 秒去重窗口：同一去重键只广播一次。 */
     private static final long QUOTE_TTL_MS = 10_000L;
 
@@ -72,7 +69,6 @@ public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessag
 
     @Override
     public void onEnable() {
-        instance = this;
         Messenger messenger = getServer().getMessenger();
         try {
             // 服务端「能收」的通道：注册后 Bukkit 会在玩家登录时通过 minecraft:register 把通道名
@@ -130,13 +126,7 @@ public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessag
         } catch (Throwable ignored) {
             // 卸载阶段尽力而为
         }
-        instance = null;
         getLogger().info("[E33Chat] E33ChatPaper disabled");
-    }
-
-    /** 供 {@link GroupRegistry} / {@link PlayerActionRelay} 取 Server 与 Logger；卸载后返回 null。 */
-    static E33ChatPaperPlugin self() {
-        return instance;
     }
 
     /**

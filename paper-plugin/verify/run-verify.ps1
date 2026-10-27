@@ -58,6 +58,30 @@ function Try-Jar([string] $pattern) {
     return $null
 }
 
+# Same as Try-Jar, but keeps only jars that really contain a given entry. Needed because the
+# cache may hold several majors of the same library and the newest is not always the one the
+# target API was compiled against (adventure-api 5.x dropped Audience$MessageType, which
+# org.bukkit.entity.Player still references -> Proxy.newProxyInstance would throw).
+function Try-JarContaining([string] $pattern, [string] $entry) {
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction SilentlyContinue
+    foreach ($root in $m2Roots) {
+        $hits = Get-ChildItem $root -Recurse -Filter $pattern -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch 'sources|javadoc' } |
+            Sort-Object Name -Descending
+        foreach ($hit in $hits) {
+            try {
+                $zip = [System.IO.Compression.ZipFile]::OpenRead($hit.FullName)
+                $found = ($null -ne $zip.GetEntry($entry))
+                $zip.Dispose()
+                if ($found) { return $hit.FullName }
+            } catch {
+                # unreadable jar -> just skip it
+            }
+        }
+    }
+    return $null
+}
+
 $libs = @(
     (Find-Jar 'netty-buffer-*.jar'),
     (Find-Jar 'netty-common-*.jar'),
@@ -143,7 +167,45 @@ if (-not $paperApi) {
     if ($LASTEXITCODE -ne 0) { throw "probe javac failed ($LASTEXITCODE)" }
     & $java -cp "$probeCp;$probeOut" ChannelProbe
     if ($LASTEXITCODE -ne 0) { $codecExit = $LASTEXITCODE }
+
+    # -----------------------------------------------------------------------------------------
+    # Stage 3: group/action state machine, driven offline through fake Player/Server/Plugin
+    # proxies (GroupFlowCheck). Needs paper-api + our own classes only, so it also runs on the
+    # 26.2 / 26.3 branches with their paper-api and JDK 25.
+    # -----------------------------------------------------------------------------------------
+    Write-Host ""
+    Write-Host "== group/action flow (fake players) =="
+    $flowBase = "$($paperApi.FullName);$classes"
+    $flowOut = Join-Path $here 'flow\out'
+    New-Item -ItemType Directory -Force -Path $flowOut | Out-Null
+    & $javac -encoding UTF-8 -cp $flowBase -d $flowOut `
+        (Join-Path $here 'com\niuqu\chatbubble\paper\GroupFlowCheck.java')
+    if ($LASTEXITCODE -ne 0) { throw "flow javac failed ($LASTEXITCODE)" }
+
+    # org.bukkit.entity.Player extends net.kyori.adventure.audience.Audience, so proxying that
+    # interface needs the whole adventure stack on the classpath (Player's method signatures
+    # reference minimessage/tag/resolver, MessageType, ...). Which adventure major is required
+    # depends on the paper-api version, and both families sit in the shared cache -- so try the
+    # families in turn instead of hardcoding one.
+    $flowOk = $false
+    foreach ($adv in @('4.26.1', '5.2.0')) {
+        $flowCp = $flowBase
+        foreach ($pattern in @(
+            "adventure-api-$adv.jar", "adventure-key-$adv.jar",
+            "adventure-text-minimessage-$adv.jar", "adventure-text-serializer-*-$adv.jar",
+            "adventure-text-logger-slf4j-$adv.jar",
+            'examination-api-*.jar', 'examination-string-*.jar', 'option-*.jar',
+            'log4j-api-*.jar', 'slf4j-api-*.jar',
+            'bungeecord-chat-*.jar', 'snakeyaml-*.jar')) {
+            $jar = Try-Jar $pattern
+            if ($jar) { $flowCp = "$flowCp;$jar" }
+        }
+        Write-Host ("-- trying adventure " + $adv)
+        & $java -cp "$flowCp;$flowOut" com.niuqu.chatbubble.paper.GroupFlowCheck
+        if ($LASTEXITCODE -eq 0) { $flowOk = $true; break }
+    }
+    if (-not $flowOk) { $codecExit = 1 }
 }
 
-Write-Host ("codec exit code = " + $codecExit)
+Write-Host ("overall exit code = " + $codecExit)
 exit $codecExit
