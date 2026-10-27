@@ -157,7 +157,9 @@ public class GroupSettingsScreen extends GroupModal {
         fieldX = cardX + 8;
         fieldW = Math.max(40, saveX - FIELD_BTN_GAP - fieldX);
         nameField.setX(fieldX + 4);
-        nameField.setY(fieldY + 4);
+        // 底框高 20：文字行 y = 框顶 + (20 - 9 + 1) / 2 = +6（只读态与编辑态同一套几何，
+        // 以前写死 +4 → 文字贴框顶、下方留白多 3px）
+        GroupUi.centerFieldText(nameField, tr, fieldY, FIELD_H);
         nameField.setWidth(Math.max(20, fieldW - 8));
 
         // 搜索成员一行：输入框占满左侧，搜索按钮同高、与输入框留 4px（与群名行同一个常量）
@@ -167,7 +169,8 @@ public class GroupSettingsScreen extends GroupModal {
         searchBtnX = rowRight - SEARCH_BTN_W;
         searchFieldW = Math.max(20, searchBtnX - FIELD_BTN_GAP - rowX);
         searchField.setX(rowX + 4);
-        searchField.setY(searchY + 4);
+        // 与群名框同一条规则：框顶 + (FIELD_H - lineHeight + 1) / 2 = +6
+        GroupUi.centerFieldText(searchField, tr, searchY, FIELD_H);
         searchField.setWidth(Math.max(20, searchFieldW - 8));
 
         listTop = searchY + FIELD_H + 6;
