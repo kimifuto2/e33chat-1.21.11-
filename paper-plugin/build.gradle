@@ -3,7 +3,11 @@ plugins {
 }
 
 group = 'com.niuqu.chatbubble'
-version = '3.0.1'
+version = '3.1.0'
+
+// 只用于产物名（E33ChatPaper-1.21.11-3.1.0.jar）与 manifest，让三个分支（1.21.11 / 26.3 / 26.2）
+// 的插件 jar 一眼可分。paper-* 各自的 mc26.3 / mc26.2 分支用 26.3 / 26.2 覆盖这个值。
+ext.paperMcVersion = '1.21.11'
 
 repositories {
     // 本机能直连的 Central 镜像（本环境下 repo.maven.apache.org 走代理也慢，见 ../project/settings.gradle 的同类备注）
@@ -30,11 +34,13 @@ tasks.withType(JavaCompile).configureEach {
 
 tasks.jar {
     archiveBaseName = 'E33ChatPaper'
-    archiveVersion = project.version
+    // 产物名 = E33ChatPaper-<服务端版本>-<插件版本>.jar，例如 E33ChatPaper-1.21.11-3.1.0.jar
+    archiveVersion = "${paperMcVersion}-${project.version}"
     manifest {
         attributes(
             'Implementation-Title': 'E33ChatPaper',
-            'Implementation-Version': project.version
+            'Implementation-Version': project.version,
+            'Paper-Minecraft-Version': paperMcVersion
         )
     }
 }

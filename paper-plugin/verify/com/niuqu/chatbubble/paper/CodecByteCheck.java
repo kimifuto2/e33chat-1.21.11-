@@ -43,6 +43,11 @@ public final class CodecByteCheck {
         checkChatMetaMentionsByteIdentical();
         checkChatMetaDecodeRoundTrip();
         checkStringLimits();
+        checkUuidAndBooleanPrimitives();
+        checkGroupOutboundByteIdentical();
+        checkGroupInboundDecodeMatchesFabric();
+        checkPlayerActionByteIdentical();
+        checkGroupWireHelpers();
 
         System.out.println();
         System.out.println("checks run : " + checks);
@@ -276,10 +281,360 @@ public final class CodecByteCheck {
         }
     }
 
+    // ================================================================ 群聊 / 动作协议
+    //
+    // 下面几组是 3.1.0 新增的群聊（group_*）与动作（player_action*）协议校验。
+    // 基准一律是「真正的 PacketByteBuf 按 Fabric CODEC 的字段顺序写一遍」：
+    //   - 出站（S2C）：本插件编码 vs 原版编码 → 整条 byte[] 必须完全相同；
+    //   - 入站（C2S）：原版编码 → 本插件解码 → 字段必须逐项相等。
+    // 这样才不是「自己编一遍再自己解一遍」的自证。
+
+    /** UUID / boolean 这两个原语单独验：UUID 是两个大端 long，boolean 是单字节 0/1。 */
+    private static void checkUuidAndBooleanPrimitives() {
+        UUID uuid = UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
+
+        // UUID：真实现 writeUuid = writeLong(msb) + writeLong(lsb)
+        ByteBuf raw = Unpooled.buffer();
+        PacketByteBuf mc = new PacketByteBuf(raw);
+        mc.writeUuid(uuid);
+        byte[] expected = drain(raw);
+        check("writeUuid is 16 bytes", expected.length == 16);
+
+        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+        McCodec.writeUuid(out, uuid);
+        check("writeUuid byte-identical to PacketByteBuf.writeUuid",
+            Arrays.equals(expected, out.toByteArray()));
+
+        // 大端：msb 的最高字节在前（0x12 0x3e 0x45 0x67 ...）
+        check("UUID long is BIG-endian (first byte 0x12, second 0x3e)",
+            expected[0] == 0x12 && expected[1] == 0x3e);
+        check("UUID second long starts at offset 8 with 0xa4",
+            expected[8] == (byte) 0xa4);
+
+        // nil UUID（全零）与 null 都写 16 个 0 字节
+        java.io.ByteArrayOutputStream nil = new java.io.ByteArrayOutputStream();
+        McCodec.writeUuid(nil, null);
+        byte[] nilBytes = nil.toByteArray();
+        boolean allZero = nilBytes.length == 16;
+        for (byte b : nilBytes) {
+            if (b != 0) {
+                allZero = false;
+            }
+        }
+        check("null UUID -> 16 zero bytes", allZero);
+
+        // 解码回来必须等值
+        McCodec.Reader reader = new McCodec.Reader(expected);
+        check("readUuid round-trip", reader.readUuid().equals(uuid));
+
+        // boolean：真实现是 netty writeBoolean（1 字节），不是 VarInt
+        ByteBuf braw = Unpooled.buffer();
+        PacketByteBuf bmc = new PacketByteBuf(braw);
+        bmc.writeBoolean(true);
+        bmc.writeBoolean(false);
+        byte[] breal = drain(braw);
+        check("boolean is 1 byte each (2 bytes total)", breal.length == 2);
+        java.io.ByteArrayOutputStream bout = new java.io.ByteArrayOutputStream();
+        McCodec.writeBoolean(bout, true);
+        McCodec.writeBoolean(bout, false);
+        check("writeBoolean byte-identical (01 00)",
+            Arrays.equals(breal, bout.toByteArray()) && breal[0] == 1 && breal[1] == 0);
+        McCodec.Reader br = new McCodec.Reader(breal);
+        check("readBoolean true then false", br.readBoolean() && !br.readBoolean());
+    }
+
+    /** 4 条 S2C 群载荷：本插件编码 vs 原版按 Fabric 字段顺序编码，整条字节必须一致。 */
+    private static void checkGroupOutboundByteIdentical() {
+        UUID groupId = UUID.fromString("11111111-2222-3333-4444-555555555555");
+        UUID creator = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        UUID alice = UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
+        UUID bob = UUID.fromString("00000000-0000-0000-0000-0000000000ff");
+        // 故意用 >32 字符的群名/成员名，验证两端夹断位置与上限一致（不然字段会错位）
+        String longName = "一个非常非常长的群聊名字用来验证三十二字符夹断行为是否正确无误";
+        String longMemberName = "同样很长的成员显示名用于校验夹断逻辑";
+        List<GroupOutbound.Member> members = List.of(
+            new GroupOutbound.Member(alice, "史蒂夫"),
+            new GroupOutbound.Member(bob, longMemberName));
+
+        // ---- group_sync
+        ByteBuf raw = Unpooled.buffer();
+        PacketByteBuf mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeString(clamp(longName, 32));
+        mc.writeString(creator.toString());
+        mc.writeVarInt(members.size());
+        for (GroupOutbound.Member m : members) {
+            mc.writeUuid(m.uuid());
+            mc.writeString(clamp(m.name(), 32));
+        }
+        byte[] expected = drain(raw);
+        byte[] actual = GroupOutbound.sync(groupId.toString(), longName, creator.toString(), members);
+        check("group_sync byte-identical (" + expected.length + " bytes)", Arrays.equals(expected, actual));
+        if (!Arrays.equals(expected, actual)) {
+            System.out.println("  expected: " + hex(expected));
+            System.out.println("  actual  : " + hex(actual));
+        }
+
+        // ---- group_message_relay
+        String content = "群消息正文：中文 + emoji ✅ + 换行\n第二行";
+        String hash = "-1234567890";
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeUuid(alice);
+        mc.writeString("史蒂夫");
+        mc.writeString(content);
+        mc.writeString(hash);
+        expected = drain(raw);
+        actual = GroupOutbound.messageRelay(groupId.toString(), alice, "史蒂夫", content, hash);
+        check("group_message_relay byte-identical (" + expected.length + " bytes)",
+            Arrays.equals(expected, actual));
+
+        // ---- group_event（kind 夹到 16、text 夹到 32）
+        String kind = "DISBANDED";
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeString(clamp(kind, 16));
+        mc.writeString(clamp(longName, 32));
+        expected = drain(raw);
+        actual = GroupOutbound.event(groupId.toString(), kind, longName);
+        check("group_event byte-identical", Arrays.equals(expected, actual));
+
+        // ---- group_invite_event（5 个字符串，kind 夹到 16，其余夹到 32）
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeString(clamp(longName, 32));
+        mc.writeString(clamp("邀请者名字很长很长很长很长很长很长", 32));
+        mc.writeString(clamp("ACCEPTED", 16));
+        mc.writeString(clamp(longMemberName, 32));
+        expected = drain(raw);
+        actual = GroupOutbound.inviteEvent(groupId.toString(), longName,
+            "邀请者名字很长很长很长很长很长很长", "ACCEPTED", longMemberName);
+        check("group_invite_event byte-identical", Arrays.equals(expected, actual));
+    }
+
+    /** 8 条 C2S 群载荷：原版按 Fabric 字段顺序编码 → 本插件解码 → 字段逐项相等。 */
+    private static void checkGroupInboundDecodeMatchesFabric() {
+        UUID groupId = UUID.fromString("11111111-2222-3333-4444-555555555555");
+        UUID a = UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
+        UUID b = UUID.fromString("00000000-0000-0000-0000-0000000000ff");
+        UUID nil = new UUID(0, 0);
+
+        // ---- group_create：String name + VarInt n + n × UUID
+        ByteBuf raw = Unpooled.buffer();
+        PacketByteBuf mc = new PacketByteBuf(raw);
+        mc.writeString("周末开黑群");
+        mc.writeVarInt(3);
+        mc.writeUuid(a);
+        mc.writeUuid(b);
+        mc.writeUuid(nil);   // nil 必须被服务端过滤掉（Fabric readUuidList 同义）
+        GroupInbound.Create create = GroupInbound.decodeCreate(drain(raw));
+        check("group_create name", create.name().equals("周末开黑群"));
+        check("group_create members (nil filtered) == 2", create.members().size() == 2);
+        check("group_create member order preserved",
+            create.members().get(0).equals(a) && create.members().get(1).equals(b));
+
+        // ---- group_message：3 个字符串（groupId / content / msgHash）
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeString("你好 ✅");
+        mc.writeString("987654321");
+        GroupInbound.Message msg = GroupInbound.decodeMessage(drain(raw));
+        check("group_message groupId", msg.groupId().equals(groupId.toString()));
+        check("group_message content", msg.content().equals("你好 ✅"));
+        check("group_message msgHash (3rd string, not missing!)", msg.msgHash().equals("987654321"));
+        check("group_message isValid", msg.isValid());
+
+        // ---- group_invite
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeVarInt(2);
+        mc.writeUuid(a);
+        mc.writeUuid(b);
+        GroupInbound.Invite invite = GroupInbound.decodeInvite(drain(raw));
+        check("group_invite groupId", invite.groupId().equals(groupId.toString()));
+        check("group_invite targets == 2", invite.members().size() == 2);
+        check("group_invite isValid", invite.isValid());
+
+        // ---- group_invite_respond：String + boolean
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeBoolean(true);
+        GroupInbound.InviteRespond respond = GroupInbound.decodeInviteRespond(drain(raw));
+        check("group_invite_respond groupId", respond.groupId().equals(groupId.toString()));
+        check("group_invite_respond accept=true (1 byte, not varint)",
+            respond.accept() && respond.isValid());
+
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeBoolean(false);
+        check("group_invite_respond accept=false",
+            !GroupInbound.decodeInviteRespond(drain(raw)).accept());
+
+        // ---- group_kick：String + UUID（16 字节，不是字符串）
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeUuid(b);
+        GroupInbound.Kick kick = GroupInbound.decodeKick(drain(raw));
+        check("group_kick groupId", kick.groupId().equals(groupId.toString()));
+        check("group_kick target UUID", kick.target().equals(b) && kick.isValid());
+
+        // ---- group_leave / group_disband：单个字符串
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        check("group_leave groupId", GroupInbound.decodeLeave(drain(raw)).groupId().equals(groupId.toString()));
+
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        check("group_disband groupId",
+            GroupInbound.decodeDisband(drain(raw)).groupId().equals(groupId.toString()));
+
+        // ---- group_rename：String + String
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeString(groupId.toString());
+        mc.writeString("新群名");
+        GroupInbound.Rename rename = GroupInbound.decodeRename(drain(raw));
+        check("group_rename groupId+name",
+            rename.groupId().equals(groupId.toString()) && rename.name().equals("新群名"));
+
+        // ---- 畸形/截断包一律降级成「无效载荷」，不抛异常（不能踢人）
+        boolean noThrow = true;
+        try {
+            GroupInbound.decodeCreate(new byte[] {0x7F});
+            GroupInbound.decodeMessage(new byte[] {(byte) 0xFF, (byte) 0xFF});
+            GroupInbound.decodeKick(new byte[] {0x01, 'x'});
+            GroupInbound.decodeInviteRespond(new byte[0]);
+            GroupInbound.decodeRename(new byte[] {0x7F, 0x7F});
+        } catch (Throwable t) {
+            noThrow = false;
+            System.out.println("  unexpected throw: " + t);
+        }
+        check("malformed group payloads degrade instead of throwing", noThrow);
+        check("empty group_message is invalid", !GroupInbound.decodeMessage(new byte[0]).isValid());
+        check("empty group_kick is invalid", !GroupInbound.decodeKick(new byte[0]).isValid());
+    }
+
+    /** player_action（C2S，7 个字符串）与 player_action_relay（S2C，UUID + 7 个字符串）。 */
+    private static void checkPlayerActionByteIdentical() {
+        UUID sender = UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
+        UUID target = UUID.fromString("11111111-2222-3333-4444-555555555555");
+        UUID groupId = UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+
+        // ---- 入站：原版编码 → 本插件解码
+        ByteBuf raw = Unpooled.buffer();
+        PacketByteBuf mc = new PacketByteBuf(raw);
+        mc.writeString(target.toString());
+        mc.writeString("史蒂夫");
+        mc.writeString("pat");
+        mc.writeString("");                       // 内置词条时 customText 为空
+        mc.writeString("拍了拍的正文 ✅");
+        mc.writeString("group");
+        mc.writeString(groupId.toString());
+        PlayerActionPayloads.Inbound in = PlayerActionPayloads.decode(drain(raw));
+        check("player_action targetUUID", in.targetUUID().equals(target.toString()));
+        check("player_action targetName", in.targetName().equals("史蒂夫"));
+        check("player_action verbId", in.verbId().equals("pat"));
+        check("player_action customText empty", in.customText().isEmpty());
+        check("player_action content", in.content().equals("拍了拍的正文 ✅"));
+        check("player_action scope", in.scope().equals("group"));
+        check("player_action groupId", in.groupId().equals(groupId.toString()));
+        check("player_action isValid", in.isValid());
+
+        // 截断/空包 → 无效载荷而不是异常
+        check("player_action truncated -> invalid",
+            !PlayerActionPayloads.decode(new byte[] {0x7F}).isValid());
+        check("player_action empty -> invalid",
+            !PlayerActionPayloads.decode(new byte[0]).isValid());
+
+        // ---- 出站：第 1 个字段是 UUID（16 字节），不是字符串
+        raw = Unpooled.buffer();
+        mc = new PacketByteBuf(raw);
+        mc.writeUuid(sender);
+        mc.writeString("史蒂夫");
+        mc.writeString(target.toString());
+        mc.writeString("Alex");
+        mc.writeString("拍了拍");
+        mc.writeString("正文内容");
+        mc.writeString("private");
+        mc.writeString("");
+        byte[] expected = drain(raw);
+        byte[] actual = PlayerActionPayloads.encodeRelay(sender, "史蒂夫", target.toString(),
+            "Alex", "拍了拍", "正文内容", "private", "");
+        check("player_action_relay byte-identical (" + expected.length + " bytes)",
+            Arrays.equals(expected, actual));
+        if (!Arrays.equals(expected, actual)) {
+            System.out.println("  expected: " + hex(expected));
+            System.out.println("  actual  : " + hex(actual));
+        }
+        // 首字节是 senderUUID 的 msb 最高字节（0x12），若误写成 UUID 字符串会是 0x24（'$' 36 字符长度前缀）
+        check("player_action_relay starts with UUID (first byte 0x12, not string length 0x24)",
+            expected[0] == 0x12 && actual[0] == 0x12);
+    }
+
+    /** 群/动作协议的纯函数语义（夹断、UUID 解析、hash 归一化）—— 两端必须同义。 */
+    private static void checkGroupWireHelpers() {
+        check("clamp keeps 32 chars",
+            "abcdefghijklmnopqrstuvwxyz012345".length() == 32
+                && GroupWire.clamp("abcdefghijklmnopqrstuvwxyz012345", 32)
+                    .equals("abcdefghijklmnopqrstuvwxyz012345"));
+        check("clamp cuts 33 -> 32",
+            GroupWire.clamp("abcdefghijklmnopqrstuvwxyz012345X", 32).length() == 32);
+        check("clamp(null) == \"\"", GroupWire.clamp(null, 32).isEmpty());
+        check("clamp does not split surrogate-free CJK by bytes", GroupWire.clamp("中文群名", 2).equals("中文"));
+
+        UUID uuid = UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
+        check("parseUuid ok", uuid.equals(GroupWire.parseUuid("123e4567-e89b-12d3-a456-426614174000")));
+        check("parseUuid trims", uuid.equals(GroupWire.parseUuid("  123e4567-e89b-12d3-a456-426614174000  ")));
+        check("parseUuid blank -> null", GroupWire.parseUuid(" ") == null);
+        check("parseUuid nil -> null", GroupWire.parseUuid("00000000-0000-0000-0000-000000000000") == null);
+        check("parseUuid garbage -> null", GroupWire.parseUuid("not-a-uuid") == null);
+
+        check("normalizeHash keeps decimal",
+            GroupWire.normalizeHash("-1234567890", "x").equals("-1234567890"));
+        check("normalizeHash hashes plain text",
+            GroupWire.normalizeHash("hello", "hello").equals(String.valueOf("hello".hashCode())));
+        check("normalizeHash empty -> content hash",
+            GroupWire.normalizeHash("", "abc").equals(String.valueOf("abc".hashCode())));
+
+        // 词条表：已知 id 用权威文本（忽略客户端自定义），custom 才用自定义词
+        check("resolveVerb pat -> 拍了拍 (customText ignored)",
+            "拍了拍".equals(PlayerActionVerbs.resolveVerb("pat", "伪造词条")));
+        check("resolveVerb custom -> sanitized custom",
+            "摸了摸".equals(PlayerActionVerbs.resolveVerb("custom", "摸了摸")));
+        check("resolveVerb unknown -> null", PlayerActionVerbs.resolveVerb("nope", "x") == null);
+        check("resolveVerb custom empty -> null", PlayerActionVerbs.resolveVerb("custom", "  ") == null);
+        check("sanitizeVerb strips color codes",
+            "红色".equals(PlayerActionVerbs.sanitizeVerb("§c红色")));
+        check("sanitizeContent clamps to 256",
+            PlayerActionVerbs.sanitizeContent("a".repeat(400)).length() == 256);
+        check("sanitizeTargetName clamps to 32",
+            PlayerActionVerbs.sanitizeTargetName("a".repeat(100)).length() == 32);
+        check("8 built-in verbs with matching texts",
+            PlayerActionVerbs.IDS.length == 8 && PlayerActionVerbs.TEXTS.length == 8);
+        check("scope fromWire public/group/private",
+            PlayerActionScope.fromWire("public") == PlayerActionScope.PUBLIC
+                && PlayerActionScope.fromWire("GROUP") == PlayerActionScope.GROUP
+                && PlayerActionScope.fromWire(" private ") == PlayerActionScope.PRIVATE
+                && PlayerActionScope.fromWire("nope") == null);
+    }
+
+    private static String clamp(String s, int max) {
+        return s == null ? "" : (s.length() <= max ? s : s.substring(0, max));
+    }
+
     // ---------------------------------------------------------------- 工具
 
-    private static byte[] drain(ByteBuf raw) {
-        byte[] out = new byte[raw.readableBytes()];
+    private static byte[] drain(ByteBuf raw) {        byte[] out = new byte[raw.readableBytes()];
         raw.readBytes(out);
         return out;
     }
