@@ -2,6 +2,7 @@ package com.niuqu.chatbubble.paper;
 
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.UUID;
 
 /**
  * 逐字节复刻 Minecraft 的线格式（{@code PacketByteBuf} 的两类原语：VarInt 与「VarInt 前缀的 UTF-8 字符串」）。
@@ -61,6 +62,29 @@ final class McCodec {
         out.write(bytes, 0, bytes.length);
     }
 
+    /** 与 netty {@code ByteBuf.writeLong} 一致：8 字节**大端**（高字节在前）。 */
+    static void writeLong(ByteArrayOutputStream out, long value) {
+        for (int shift = 56; shift >= 0; shift -= 8) {
+            out.write((int) (value >>> shift) & 0xFF);
+        }
+    }
+
+    /**
+     * 与 {@code PacketByteBuf.writeUuid(UUID)} 一致：{@code writeLong(msb); writeLong(lsb)}，
+     * 共 16 字节（javap 实测 1.21.11 的 {@code PacketByteBuf.writeUuid} 字节码就是这个两条 writeLong）。
+     * {@code null} 写成全零 UUID（与 Fabric 侧 {@code GroupWire.writeUuidList} 的兜底同义）。
+     */
+    static void writeUuid(ByteArrayOutputStream out, UUID value) {
+        UUID u = value == null ? new UUID(0, 0) : value;
+        writeLong(out, u.getMostSignificantBits());
+        writeLong(out, u.getLeastSignificantBits());
+    }
+
+    /** 与 netty {@code ByteBuf.writeBoolean} 一致：单字节 0 / 1。 */
+    static void writeBoolean(ByteArrayOutputStream out, boolean value) {
+        out.write(value ? 1 : 0);
+    }
+
     // ------------------------------------------------------------------ 读
 
     /** 只读游标。任何越界 / 畸形输入都抛 {@link IllegalArgumentException}。 */
@@ -112,6 +136,32 @@ final class McCodec {
                     "string too long: " + s.length() + " chars > " + MAX_STR_CHARS);
             }
             return s;
+        }
+
+        /** 8 字节大端 long（与 netty {@code readLong} 一致）。 */
+        long readLong() {
+            if (data.length - pos < 8) {
+                throw new IllegalArgumentException(
+                    "truncated long: want 8 bytes, have " + (data.length - pos));
+            }
+            long value = 0L;
+            for (int i = 0; i < 8; i++) {
+                value = (value << 8) | (data[pos++] & 0xFFL);
+            }
+            return value;
+        }
+
+        /** 与 {@code PacketByteBuf.readUuid()} 一致：两个 long。 */
+        UUID readUuid() {
+            return new UUID(readLong(), readLong());
+        }
+
+        /** 与 netty {@code readBoolean} 一致：单字节，非 0 即 true。 */
+        boolean readBoolean() {
+            if (pos >= data.length) {
+                throw new IllegalArgumentException("truncated boolean at offset " + pos);
+            }
+            return data[pos++] != 0;
         }
     }
 

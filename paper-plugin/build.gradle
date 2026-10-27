@@ -3,7 +3,7 @@ plugins {
 }
 
 group = 'com.niuqu.chatbubble'
-version = '3.0.1'
+version = '3.1.0'
 
 // ---- Paper 服务端版本（26.x 起换了版本体系） ----------------------------------------
 // 坐标不再是 "1.21.11-R0.1-SNAPSHOT"，而是 "<mc>.build.<build>-<channel>"，例如 26.3.build.222-stable。
@@ -41,7 +41,7 @@ tasks.withType(JavaCompile).configureEach {
 
 tasks.jar {
     archiveBaseName = 'E33ChatPaper'
-    // 产物名 = E33ChatPaper-<服务端版本>-<插件版本>.jar，例如 E33ChatPaper-26.3-3.0.1.jar
+    // 产物名 = E33ChatPaper-<服务端版本>-<插件版本>.jar，例如 E33ChatPaper-26.3-3.1.0.jar
     archiveVersion = "${paperMcVersion}-${project.version}"
     manifest {
         attributes(

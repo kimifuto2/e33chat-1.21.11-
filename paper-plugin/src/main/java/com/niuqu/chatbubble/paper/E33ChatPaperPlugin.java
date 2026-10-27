@@ -6,6 +6,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.plugin.messaging.Messenger;
 import org.bukkit.plugin.messaging.PluginMessageListener;
@@ -17,27 +18,34 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * E33Chat 的 Paper 侧薄服务端（引用跨玩家同步 + @提及同步）。
+ * E33Chat 的 Paper 侧薄服务端（引用跨玩家同步 + @提及同步 + **群聊** + **动作消息转发**）。
  *
  * <p>协议（已由现有 Fabric 客户端固定，插件侧逐字节复刻，客户端一行不改）：
  * <pre>
  *   客户端 --C2S e33chat:quote_sync--> 本插件 --S2C e33chat:chat_meta--> 所有在线玩家（含发送者）
  *   聊天事件 --（本地解析 @名字）---------------------------------------^
- * </pre>
- * 也就是说插件只做这几件事：解码 4 个字符串、按 {@code <uuid>|<msgHash>|<kind>} 做 10 秒去重、
- * 从聊天明文里解析 {@code @名字}、编码 7 个字段后广播。编码细节见
- * {@link McCodec} / {@link QuoteSyncPayload} / {@link ChatMetaPayload}，提及解析见 {@link MentionParser}。
  *
- * <p>为什么不是「移植整个模组」：Fabric 服务端侧的逻辑只有「收 payload → 广播 payload」，
+ *   客户端 --C2S e33chat:group_*（8 条）--> GroupRegistry --S2C e33chat:group_sync / group_message_relay /
+ *                                                                    group_event / group_invite_event--> 目标玩家
+ *   客户端 --C2S e33chat:player_action--> PlayerActionRelay --S2C e33chat:player_action_relay--> 范围内的其它玩家
+ * </pre>
+ * 也就是说插件只做这几件事：解/编码自定义载荷、维护服务端权威的群状态、按范围广播。编码细节见
+ * {@link McCodec} / {@link GroupInbound} / {@link GroupOutbound} / {@link PlayerActionPayloads}，
+ * 群行为见 {@link GroupRegistry}，动作行为见 {@link PlayerActionRelay}。
+ *
+ * <p>为什么不是「移植整个模组」：Fabric 服务端侧的逻辑只有「收 payload → 校验 → 广播 payload」，
  * 不碰世界数据/实体/命令树，所以同一套线格式在 Bukkit 的插件通道 API 上可以直接复用。
  */
 public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessageListener, Listener {
 
     /** C2S：客户端右键「引用」时上传被引用消息的发送者/正文与两个指纹。 */
-    public static final String CHANNEL_QUOTE_SYNC = "e33chat:quote_sync";
+    public static final String CHANNEL_QUOTE_SYNC = E33Channels.QUOTE_SYNC;
 
     /** S2C：服务端广播「这条消息的引用块 / @ 列表 / 指纹」。 */
-    public static final String CHANNEL_CHAT_META = "e33chat:chat_meta";
+    public static final String CHANNEL_CHAT_META = E33Channels.CHAT_META;
+
+    /** 当前插件实例（{@link GroupRegistry} / {@link PlayerActionRelay} 用它拿 Server 与 Logger）。 */
+    private static E33ChatPaperPlugin instance;
 
     /** 与 Fabric 版一致的 10 秒去重窗口：同一去重键只广播一次。 */
     private static final long QUOTE_TTL_MS = 10_000L;
@@ -64,78 +72,254 @@ public final class E33ChatPaperPlugin extends JavaPlugin implements PluginMessag
 
     @Override
     public void onEnable() {
+        instance = this;
         Messenger messenger = getServer().getMessenger();
         try {
             // 服务端「能收」的通道：注册后 Bukkit 会在玩家登录时通过 minecraft:register 把通道名
-            // 宣告给客户端，Fabric 客户端的 ClientPlayNetworking.canSend(quote_sync) 因此为 true，
+            // 宣告给客户端，Fabric 客户端的 ClientPlayNetworking.canSend(...) 因此为 true，
             // 客户端才会把本服写进 config/e33chat/e33chat-servers.txt（下次连接起正式开联动）。
-            messenger.registerIncomingPluginChannel(this, CHANNEL_QUOTE_SYNC, this);
+            for (String channel : E33Channels.INCOMING) {
+                messenger.registerIncomingPluginChannel(this, channel, this);
+            }
             // 服务端「能发」的通道：没有注册的话 CraftPlayer#sendPluginMessage 会直接抛 IllegalArgumentException。
-            messenger.registerOutgoingPluginChannel(this, CHANNEL_CHAT_META);
+            for (String channel : E33Channels.OUTGOING) {
+                messenger.registerOutgoingPluginChannel(this, channel);
+            }
         } catch (Throwable t) {
             getLogger().severe("[E33Chat] failed to register plugin channels: " + t);
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
+        // 群聊后端是纯内存态（重启丢群），这里把状态挂到本插件实例上，卸载时统一清空。
+        GroupRegistry.init(this);
         // 聊天事件监听：@提及解析（Paper 1.21.x 的 AsyncChatEvent；不能用已废弃的
         // org.bukkit.event.player.AsyncPlayerChatEvent —— 在 Paper 上它不再携带完整语义）。
+        // 同一个 Listener 里还挂了 PlayerJoinEvent（登录补发群快照）。
         getServer().getPluginManager().registerEvents(this, this);
-        getLogger().info("[E33Chat] E33ChatPaper enabled | in=" + CHANNEL_QUOTE_SYNC
-            + " | out=" + CHANNEL_CHAT_META + " | dedupeWindow=" + QUOTE_TTL_MS + "ms"
-            + " | mentions=on(" + AsyncChatEvent.class.getSimpleName() + ")");
+        getLogger().info("[E33Chat] E33ChatPaper enabled | in=" + E33Channels.INCOMING.size()
+            + " | out=" + E33Channels.OUTGOING.size()
+            + " | dedupeWindow=" + QUOTE_TTL_MS + "ms"
+            + " | mentions=on(" + AsyncChatEvent.class.getSimpleName() + ")"
+            + " | groups=on(in-memory, invites=pending)"
+            + " | actions=on(verbs=" + PlayerActionVerbs.IDS.length + ", scopes=public/group/private)");
+        // 通道清单单独打两行：排「为什么客户端的 canSend 为 false」时，一眼看到底注册了哪些。
+        getLogger().info("[E33Chat] channels in  = " + String.join(", ", E33Channels.INCOMING));
+        getLogger().info("[E33Chat] channels out = " + String.join(", ", E33Channels.OUTGOING));
     }
 
     @Override
     public void onDisable() {
         Messenger messenger = getServer().getMessenger();
-        try {
-            messenger.unregisterIncomingPluginChannel(this, CHANNEL_QUOTE_SYNC, this);
-        } catch (Throwable ignored) {
-            // 卸载阶段尽力而为
+        for (String channel : E33Channels.INCOMING) {
+            try {
+                messenger.unregisterIncomingPluginChannel(this, channel, this);
+            } catch (Throwable ignored) {
+                // 卸载阶段尽力而为
+            }
         }
-        try {
-            messenger.unregisterOutgoingPluginChannel(this, CHANNEL_CHAT_META);
-        } catch (Throwable ignored) {
-            // 卸载阶段尽力而为
+        for (String channel : E33Channels.OUTGOING) {
+            try {
+                messenger.unregisterOutgoingPluginChannel(this, channel);
+            } catch (Throwable ignored) {
+                // 卸载阶段尽力而为
+            }
         }
         broadcastDedupe.clear();
+        try {
+            GroupRegistry.reset();
+        } catch (Throwable ignored) {
+            // 卸载阶段尽力而为
+        }
+        instance = null;
         getLogger().info("[E33Chat] E33ChatPaper disabled");
     }
 
+    /** 供 {@link GroupRegistry} / {@link PlayerActionRelay} 取 Server 与 Logger；卸载后返回 null。 */
+    static E33ChatPaperPlugin self() {
+        return instance;
+    }
+
     /**
-     * Bukkit 的插件消息入口。只处理 {@code e33chat:quote_sync}，其余通道（包括服务端自己广播出去的
-     * {@code chat_meta}）一律忽略。
+     * Bukkit 的插件消息入口（**主线程**）。
+     *
+     * <p>只处理 {@link E33Channels#INCOMING} 里登记的通道，其余（包括服务端自己广播出去的 S2C）
+     * 一律忽略。每个通道的处理器都整体 try/catch —— 异常绝不允许冒泡到网络层（那会直接踢人）。
      */
     @Override
     public void onPluginMessageReceived(String channel, Player player, byte[] message) {
-        if (!CHANNEL_QUOTE_SYNC.equals(channel)) {
+        if (!E33Channels.isIncoming(channel)) {
             return;
         }
         if (player == null || message == null || message.length == 0) {
             return;
         }
+        // 所有通道共用的 DoS 护栏：正常载荷远小于 1KB，超大包直接丢（连解析都不进）。
+        if (message.length > MAX_PAYLOAD_BYTES) {
+            getLogger().warning("[E33Chat] " + channel + " dropped | player=" + safeName(player)
+                + " | oversized payload: " + message.length + " bytes > " + MAX_PAYLOAD_BYTES);
+            return;
+        }
         try {
             if (getServer().isPrimaryThread()) {
-                handleSafely(player, message);
+                handleSafely(channel, player, message);
             } else {
                 // 目前 Paper 在主线程派发插件消息；万一将来改了派发线程，切回主线程再广播/发包。
                 byte[] copy = message.clone();
-                getServer().getScheduler().runTask(this, () -> handleSafely(player, copy));
+                getServer().getScheduler().runTask(this, () -> handleSafely(channel, player, copy));
             }
         } catch (Throwable t) {
-            getLogger().warning("[E33Chat] quote_sync dispatch failed | player=" + safeName(player)
+            getLogger().warning("[E33Chat] " + channel + " dispatch failed | player=" + safeName(player)
                 + " | " + t);
         }
     }
 
     /** 兜住一切异常：协议不一致 / 畸形包只记日志丢弃，**绝不让异常冒泡到网络层**（那会直接踢人）。 */
-    private void handleSafely(Player player, byte[] message) {
+    private void handleSafely(String channel, Player player, byte[] message) {
         try {
-            handleQuoteSync(player, message);
+            if (E33Channels.QUOTE_SYNC.equals(channel)) {
+                handleQuoteSync(player, message);
+                return;
+            }
+            if (E33Channels.PLAYER_ACTION.equals(channel)) {
+                handlePlayerAction(player, message);
+                return;
+            }
+            handleGroup(channel, player, message);
         } catch (Throwable t) {
-            getLogger().warning("[E33Chat] quote_sync dropped | player=" + safeName(player)
+            getLogger().warning("[E33Chat] " + channel + " dropped | player=" + safeName(player)
                 + " | bytes=" + (message == null ? 0 : message.length)
                 + " | " + t.getClass().getSimpleName() + ": " + t.getMessage());
+        }
+    }
+
+    // --------------------------------------------------------------- 群聊 / 动作派发
+
+    /**
+     * 群聊 8 条 C2S 的派发：解析 + 派发 + 记日志（与 Fabric {@code registerGroupReceivers} 的
+     * 日志文字同形，方便两端日志对照）。状态校验全部在 {@link GroupRegistry} 里做。
+     */
+    private void handleGroup(String channel, Player player, byte[] message) {
+        if (E33Channels.GROUP_CREATE.equals(channel)) {
+            GroupInbound.Create payload = GroupInbound.decodeCreate(message);
+            getLogger().info("[E33Chat] group_create recv | player=" + safeName(player)
+                + " | name='" + McCodec.preview(payload.name())
+                + "' | members=" + payload.members().size());
+            GroupRegistry.create(player, payload);
+            return;
+        }
+        if (E33Channels.GROUP_MESSAGE.equals(channel)) {
+            GroupInbound.Message payload = GroupInbound.decodeMessage(message);
+            if (!payload.isValid()) {
+                getLogger().info("[E33Chat] group_message ignored | invalid payload | player="
+                    + safeName(player) + " | group=" + McCodec.preview(payload.groupId()));
+                return;
+            }
+            getLogger().info("[E33Chat] group_message recv | player=" + safeName(player)
+                + " | group=" + McCodec.preview(payload.groupId())
+                + " | hash=" + McCodec.preview(payload.msgHash())
+                + " | len=" + (payload.content() == null ? 0 : payload.content().length()));
+            GroupRegistry.relayMessage(player, payload);
+            return;
+        }
+        if (E33Channels.GROUP_INVITE.equals(channel)) {
+            GroupInbound.Invite payload = GroupInbound.decodeInvite(message);
+            if (!payload.isValid()) {
+                getLogger().info("[E33Chat] group_invite ignored | invalid payload | player="
+                    + safeName(player));
+                return;
+            }
+            getLogger().info("[E33Chat] group_invite recv | player=" + safeName(player)
+                + " | group=" + McCodec.preview(payload.groupId())
+                + " | targets=" + payload.members().size());
+            GroupRegistry.invite(player, payload);
+            return;
+        }
+        if (E33Channels.GROUP_INVITE_RESPOND.equals(channel)) {
+            GroupInbound.InviteRespond payload = GroupInbound.decodeInviteRespond(message);
+            if (!payload.isValid()) {
+                getLogger().info("[E33Chat] group_invite_respond ignored | invalid payload | player="
+                    + safeName(player));
+                return;
+            }
+            getLogger().info("[E33Chat] group_invite_respond recv | player=" + safeName(player)
+                + " | group=" + McCodec.preview(payload.groupId()) + " | accept=" + payload.accept());
+            GroupRegistry.respondInvite(player, payload);
+            return;
+        }
+        if (E33Channels.GROUP_KICK.equals(channel)) {
+            GroupInbound.Kick payload = GroupInbound.decodeKick(message);
+            if (!payload.isValid()) {
+                getLogger().info("[E33Chat] group_kick ignored | invalid payload | player=" + safeName(player));
+                return;
+            }
+            getLogger().info("[E33Chat] group_kick recv | player=" + safeName(player)
+                + " | group=" + McCodec.preview(payload.groupId()) + " | target=" + payload.target());
+            GroupRegistry.kick(player, payload);
+            return;
+        }
+        if (E33Channels.GROUP_LEAVE.equals(channel)) {
+            GroupInbound.Leave payload = GroupInbound.decodeLeave(message);
+            if (!payload.isValid()) {
+                return;
+            }
+            getLogger().info("[E33Chat] group_leave recv | player=" + safeName(player)
+                + " | group=" + McCodec.preview(payload.groupId()));
+            GroupRegistry.leave(player, payload);
+            return;
+        }
+        if (E33Channels.GROUP_RENAME.equals(channel)) {
+            GroupInbound.Rename payload = GroupInbound.decodeRename(message);
+            if (!payload.isValid()) {
+                getLogger().info("[E33Chat] group_rename ignored | invalid payload | player=" + safeName(player));
+                return;
+            }
+            getLogger().info("[E33Chat] group_rename recv | player=" + safeName(player)
+                + " | group=" + McCodec.preview(payload.groupId())
+                + " | name='" + McCodec.preview(payload.name()) + "'");
+            GroupRegistry.rename(player, payload);
+            return;
+        }
+        if (E33Channels.GROUP_DISBAND.equals(channel)) {
+            GroupInbound.Disband payload = GroupInbound.decodeDisband(message);
+            if (!payload.isValid()) {
+                return;
+            }
+            getLogger().info("[E33Chat] group_disband recv | player=" + safeName(player)
+                + " | group=" + McCodec.preview(payload.groupId()));
+            GroupRegistry.disband(player, payload);
+        }
+    }
+
+    /** 动作消息：解码 → 最低有效性 → 交给 {@link PlayerActionRelay} 做权威词条/范围校验。 */
+    private void handlePlayerAction(Player player, byte[] message) {
+        PlayerActionPayloads.Inbound payload = PlayerActionPayloads.decode(message);
+        if (!payload.isValid()) {
+            getLogger().info("[E33Chat] player_action ignored | invalid payload | player="
+                + safeName(player) + " | verb=" + McCodec.preview(payload.verbId())
+                + " | target=" + McCodec.preview(payload.targetName()));
+            return;
+        }
+        getLogger().info("[E33Chat] player_action recv | player=" + safeName(player)
+            + " | target=" + McCodec.preview(payload.targetName())
+            + " | verb=" + McCodec.preview(payload.verbId())
+            + " | scope=" + McCodec.preview(payload.scope())
+            + " | len=" + (payload.content() == null ? 0 : payload.content().length()));
+        PlayerActionRelay.handle(player, payload);
+    }
+
+    /**
+     * 玩家登录：把该玩家所属的**全部群**补发一遍（{@code group_sync}）。
+     *
+     * <p>客户端因此不需要自己持久化成员表；Paper 端群状态是内存态，重启后这里补发的就是空列表
+     * （客户端那边也会因为服务端重启而收不到旧群，属已知限制）。
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onPlayerJoin(PlayerJoinEvent event) {
+        try {
+            GroupRegistry.syncAllTo(event.getPlayer());
+        } catch (Throwable t) {
+            getLogger().warning("[E33Chat] group join sync failed | player="
+                + safeName(event.getPlayer()) + " | " + t);
         }
     }
 
