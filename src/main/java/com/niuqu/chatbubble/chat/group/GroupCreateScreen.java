@@ -130,9 +130,10 @@ public class GroupCreateScreen extends GroupModal {
         int y = cardY + TITLE_H;
         if (!isInviteMode() && nameField != null) {
             fieldY = y;
-            // 输入框底高 20：文字顶在 boxY+4，视觉居中（TextFieldWidget 无背景时文字 y = 自身 y）
+            // 底框高 20：文字行 y = 框顶 + GroupUi.fieldTextOffset(20) = 框顶 + 6，
+            // 上下留白各 6/5（以前写死 +4 → 文字贴顶、下方多留 3px）。
             nameField.setX(cardX + 12);
-            nameField.setY(fieldY + 4);
+            GroupUi.centerFieldText(nameField, tr, fieldY, FIELD_H);
             nameField.setWidth(Math.max(20, cardW - 24));
             y += FIELD_H + 4;
         }
@@ -145,7 +146,8 @@ public class GroupCreateScreen extends GroupModal {
         searchFieldW = Math.max(20, searchBtnX - FIELD_BTN_GAP - rowX);
         if (searchField != null) {
             searchField.setX(rowX + 4);
-            searchField.setY(searchY + 4);
+            // 与群名框同一条规则：框顶 + (FIELD_H - fontHeight + 1) / 2 = +6
+            GroupUi.centerFieldText(searchField, tr, searchY, FIELD_H);
             searchField.setWidth(Math.max(20, searchFieldW - 8));
         }
         y += FIELD_H + 6;
