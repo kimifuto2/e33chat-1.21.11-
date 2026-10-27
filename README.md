@@ -1,7 +1,7 @@
 # E33Chat · Minecraft 1.21.11 Fabric 版
 
 > **本分支：`main` · Minecraft 1.21.11（稳定线）**
-> 产物：**`e33chat-Fabric-1.21.11-3.1.0.jar`**（685,004 字节 / ≈669 KiB） · 模组版本 **3.1.0**
+> 产物：**`e33chat-Fabric-1.21.11-3.1.1.jar`**（684,562 字节 / ≈669 KiB） · 模组版本 **3.1.1**
 > 仓库：[kimifuto2/e33chat-1.21.11-](https://github.com/kimifuto2/e33chat-1.21.11-) · 上游：[E33EPUS/E33Chat](https://github.com/E33EPUS/E33Chat)（MIT）
 >
 > 基于上游的 **1.21.11 Fabric 移植**，并在其上做了大量功能增强与缺陷修复：在保留原作者聊天界面风格的基础上，补齐了上游没有的交互与通知能力。
@@ -12,9 +12,9 @@
 
 | 分支 | Minecraft | 定位 | 产物 jar（各分支最新） | 大小 |
 |---|---|---|---|---|
-| **`main`**（本分支） | 1.21.11 | 稳定线 | `e33chat-Fabric-1.21.11-3.1.0.jar` | 685,004 B |
-| `mc26.3` | 26.3 | 26.x 移植线 | `e33chat-Fabric-26.3-3.0.1.jar` | 543,126 B |
-| `mc26.2` | 26.2 | 26.x 移植线 | `e33chat-Fabric-26.2-3.0.1.jar` | 543,103 B |
+| **`main`**（本分支） | 1.21.11 | 稳定线 | `e33chat-Fabric-1.21.11-3.1.1.jar` | 684,562 B |
+| `mc26.3` | 26.3 | 26.x 移植线 | `e33chat-Fabric-26.3-3.1.1.jar` | 688,440 B |
+| `mc26.2` | 26.2 | 26.x 移植线 | `e33chat-Fabric-26.2-3.1.1.jar` | 688,404 B |
 
 > 三个分支都在 **<https://github.com/kimifuto2/e33chat-1.21.11->** 下。`mc26.3` / `mc26.2` 是 **26.x 移植线**（Mojang 年份版本号），构建链与 1.21.11 差异很大（Java 25 / Gradle 9.8+ / Loom 1.19.3 / 不再混淆），详见对应分支 README 的「26.x 移植说明」；**本分支（`main`）只针对 1.21.11**。
 
@@ -44,7 +44,7 @@
 
 1. 建一个 **Minecraft 1.21.11 + Fabric Loader 0.19.3** 的实例（官方启动器 / Prism / Axolot 等均可）；
 2. 把 **Fabric API `0.141.5+1.21.11`**（或该 MC 版本的更新版）放进实例的 `mods/`；
-3. 把 **`e33chat-Fabric-1.21.11-3.1.0.jar`** 放进**同一个**实例的 `mods/` 目录；
+3. 把 **`e33chat-Fabric-1.21.11-3.1.1.jar`** 放进**同一个**实例的 `mods/` 目录；
 4. （可选）装 **Mod Menu**，即可获得图形化配置入口；
 5. 启动游戏后聊天栏就是本模组的聊天界面，配置界面在 **Mod Menu → E33Chat → 配置**。
 
@@ -54,14 +54,14 @@
 
 | 服务端类型 | 装什么 | 效果 |
 |---|---|---|
-| Fabric 服务端 | 本分支的 `e33chat-Fabric-1.21.11-3.1.0.jar` | 消息元数据 / 引用精确跳转 / @提及同步 / **群聊** / **玩家互动动作**全部可用 |
+| Fabric 服务端 | 本分支的 `e33chat-Fabric-1.21.11-3.1.1.jar` | 消息元数据 / 引用精确跳转 / @提及同步 / **群聊** / **玩家互动动作**全部可用 |
 | Paper 1.21.11 | `paper-plugin/` 构建出的 `E33ChatPaper-3.0.1.jar` | 走同一套自定义载荷线协议，**客户端一行不用改**（见 [`paper-plugin/README.md`](paper-plugin/README.md)） |
 
 ---
 
 ## 3.x 版本说明（相对上游 2.4.2）
 
-当前版本 **3.1.0**（3.1.0 在 3.0.1 之上新增**群聊**与**玩家互动动作**）。相对上游 2.4.2，本版除完成 1.21.11 Fabric 移植外，还包含以下增强：
+当前版本 **3.1.1**（3.1.0 在 3.0.1 之上新增**群聊**与**玩家互动动作**；3.1.1 移除了音乐胶囊的进度条）。相对上游 2.4.2，本版除完成 1.21.11 Fabric 移植外，还包含以下增强：
 
 | 类别 | 内容 |
 |---|---|
@@ -249,8 +249,8 @@ java.lang.IllegalStateException: Cannot register channel. Too many channel regis
 
 | 文件 | 大小 |
 |---|---|
-| `build/libs/e33chat-Fabric-1.21.11-3.1.0.jar` | 685,004 B |
-| `build/libs/e33chat-Fabric-1.21.11-3.1.0-sources.jar` | 476,221 B |
+| `build/libs/e33chat-Fabric-1.21.11-3.1.1.jar` | 684,562 B |
+| `build/libs/e33chat-Fabric-1.21.11-3.1.1-sources.jar` | 476,086 B |
 
 ---
 
