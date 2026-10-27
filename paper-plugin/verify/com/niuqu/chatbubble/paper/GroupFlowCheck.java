@@ -7,6 +7,9 @@ import org.bukkit.plugin.Plugin;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -85,7 +88,7 @@ public final class GroupFlowCheck {
         }
     }
 
-    public static void main(String[] args) {
+    public static void main(String[] args) throws Exception {
         Map<UUID, FakePlayer> byId = new LinkedHashMap<>();
         Map<String, FakePlayer> byName = new LinkedHashMap<>();
         FakePlayer alice = new FakePlayer("Alice");
@@ -102,7 +105,8 @@ public final class GroupFlowCheck {
         Plugin plugin = pluginProxy(byId, byName);
 
         GroupRegistry.reset();
-        GroupRegistry.init(plugin);
+        // 第 1~6 阶段只验状态机：storeFile=null → 纯内存，行为必须与 3.1.0（无持久化）完全一致。
+        GroupRegistry.init(plugin, null);
 
         UUID gid = createAndInvite(alice, aliceP, bob, bobP, carol);
         acceptInvite(alice, bob, bobP, carol, carolP, gid);
@@ -110,6 +114,7 @@ public final class GroupFlowCheck {
         permissions(alice, aliceP, bob, bobP, carol, gid);
         kickAndDisband(alice, aliceP, bob, bobP, gid);
         actions(alice, aliceP, bob, bobP, carol, carolP);
+        persistence(alice, aliceP, bob, bobP, plugin);
 
         System.out.println();
         System.out.println("checks run : " + checks);
@@ -444,6 +449,223 @@ public final class GroupFlowCheck {
             bob.of(E33Channels.PLAYER_ACTION_RELAY).size() == 1);
     }
 
+    // ---------------------------------------------------------------- 7. 持久化
+
+    /**
+     * 落盘层（{@link GroupStore}）的离线校验：用临时目录当「世界目录」，把
+     * 「加载 → 变更即保存 → 模拟重启（reset + init 同一个文件）→ 再读回」整条链路真跑一遍。
+     *
+     * <p>覆盖：
+     * <ul>
+     *   <li>文件不存在 = 空（不报错、不创建文件）；</li>
+     *   <li>每次状态变更后文件立刻更新，且原子写用的临时文件不残留；</li>
+     *   <li>JSON 字段名与 Fabric Gson 输出一致（id/name/creator/members/uuid），
+     *       中文与 {@code < & >} 原样落盘（对应 Gson 的 disableHtmlEscaping）；</li>
+     *   <li>改名 / 加人 / 踢人 / 解散在「重启」后都保持（解散不复活）；</li>
+     *   <li>pending 邀请跨重启存活，玩家上线时补发（且不重复发 group_sync）；</li>
+     *   <li>能读 Fabric 写出的文件（没有 pendingInvites 键、creator 是空串、空成员群被跳过）；</li>
+     *   <li>坏文件只记日志、不崩、不覆盖；保存失败时旧文件不被破坏、内存态仍然更新。</li>
+     * </ul>
+     */
+    private static void persistence(FakePlayer alice, Player aliceP, FakePlayer bob, Player bobP,
+                                    Plugin plugin) throws Exception {
+        Path dir = Files.createTempDirectory("e33chat-groups");
+        Path file = dir.resolve(GroupStore.DIR_NAME).resolve(GroupStore.FILE_NAME);
+        Path tmp = file.resolveSibling(GroupStore.FILE_NAME + GroupStore.TEMP_SUFFIX);
+        try {
+            // ---- 1. 文件不存在 = 空
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            check("store -> missing file loads empty",
+                GroupRegistry.groupCount() == 0 && GroupRegistry.pendingCount() == 0);
+            check("store -> load does not create the file", !Files.exists(file));
+
+            // ---- 2. 建群后立刻落盘（原子写的临时文件不残留）
+            alice.clear();
+            bob.clear();
+            GroupRegistry.create(aliceP, new GroupInbound.Create("持久<&>化群", List.of(bob.id)));
+            UUID gid = onlyGroup().id();
+            check("store -> create writes the file", Files.isRegularFile(file));
+            check("store -> no temp file left", !Files.exists(tmp));
+            String json = readText(file);
+            check("store -> json has version + groups",
+                json.contains("\"version\": 1") && json.contains("\"groups\": ["));
+            check("store -> fabric field names id/name/creator/members/uuid",
+                json.contains("\"id\": \"") && json.contains("\"name\": \"")
+                    && json.contains("\"creator\": \"") && json.contains("\"members\": [")
+                    && json.contains("\"uuid\": \""));
+            check("store -> utf8 raw + no html escaping (Gson disableHtmlEscaping)",
+                json.contains("持久<&>化群") && !json.contains("\\u003c"));
+            check("store -> pending invites persisted",
+                json.contains("\"pendingInvites\": [") && json.contains(bob.id.toString()));
+            check("store -> save is logged after create", logged("store saved | via=create"));
+            System.out.println("---- sample store file (after create) ----");
+            System.out.println(json);
+
+            // ---- 3. 模拟重启：清内存 → 同一个文件重新加载
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            GroupRegistry.Group g = onlyGroup();
+            check("store -> reload keeps name/creator",
+                "持久<&>化群".equals(g.name()) && alice.id.equals(g.creator()));
+            check("store -> reload keeps member name",
+                g.size() == 1 && "Alice".equals(g.memberList().get(0).name()));
+            check("store -> pending survives restart", GroupRegistry.pendingCount() == 1);
+
+            // ---- 4. pending 在登录时补发（重启后邀请按钮还能回来）
+            bob.clear();
+            GroupRegistry.syncAllTo(bobP);
+            List<Sent> invites = bob.of(E33Channels.GROUP_INVITE_EVENT);
+            check("store -> pending invite replayed on join", invites.size() == 1);
+            InviteEvent replay = InviteEvent.decode(invites.get(0).data);
+            check("store -> replayed invite fields",
+                "INVITE".equals(replay.kind) && "Alice".equals(replay.inviterName)
+                    && "持久<&>化群".equals(replay.groupName) && "Bob".equals(replay.actorName)
+                    && gid.toString().equals(replay.groupId));
+            check("store -> replay sends no group_sync", bob.of(E33Channels.GROUP_SYNC).isEmpty());
+
+            // ---- 5. 接受邀请 + 改名 → 重启后都保持
+            GroupRegistry.respondInvite(bobP, new GroupInbound.InviteRespond(gid.toString(), true));
+            GroupRegistry.rename(aliceP, new GroupInbound.Rename(gid.toString(), "改名后"));
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            g = onlyGroup();
+            check("store -> accept + rename survive restart",
+                g.size() == 2 && g.hasMember(bob.id) && "改名后".equals(g.name()));
+            check("store -> accepted invite dropped from pending", GroupRegistry.pendingCount() == 0);
+
+            // ---- 6. 踢人 / 解散在重启后不复活
+            GroupRegistry.kick(aliceP, new GroupInbound.Kick(gid.toString(), bob.id));
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            check("store -> kick survives restart",
+                onlyGroup().size() == 1 && !onlyGroup().hasMember(bob.id));
+            GroupRegistry.disband(aliceP, new GroupInbound.Disband(gid.toString()));
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            check("store -> disband does not resurrect", GroupRegistry.groupCount() == 0);
+
+            // ---- 7. 读 Fabric 写出来的文件（它的 Gson 输出没有 pendingInvites，creator 可能是 ""）
+            UUID fabricGroup = UUID.nameUUIDFromBytes(
+                "e33chat-test:fabric-group".getBytes(StandardCharsets.UTF_8));
+            UUID noCreatorGroup = UUID.nameUUIDFromBytes(
+                "e33chat-test:no-creator".getBytes(StandardCharsets.UTF_8));
+            UUID emptyGroup = UUID.nameUUIDFromBytes(
+                "e33chat-test:empty".getBytes(StandardCharsets.UTF_8));
+            UUID creator = alice.id;
+            UUID offline = UUID.nameUUIDFromBytes(
+                "e33chat-test:Offline".getBytes(StandardCharsets.UTF_8));
+            Files.createDirectories(file.getParent());
+            writeText(file, ""
+                + "{\n"
+                + "  \"version\": 1,\n"
+                + "  \"groups\": [\n"
+                + "    {\n"
+                + "      \"id\": \"" + fabricGroup + "\",\n"
+                + "      \"name\": \"Fabric 写的群\",\n"
+                + "      \"creator\": \"" + creator + "\",\n"
+                + "      \"members\": [\n"
+                + "        {\n"
+                + "          \"uuid\": \"" + creator + "\",\n"
+                + "          \"name\": \"Alice\"\n"
+                + "        },\n"
+                + "        {\n"
+                + "          \"uuid\": \"" + offline + "\",\n"
+                + "          \"name\": \"离线成员\"\n"
+                + "        }\n"
+                + "      ]\n"
+                + "    },\n"
+                + "    {\n"
+                + "      \"id\": \"" + noCreatorGroup + "\",\n"
+                + "      \"name\": \"\",\n"
+                + "      \"creator\": \"\",\n"
+                + "      \"members\": [\n"
+                + "        {\n"
+                + "          \"uuid\": \"" + creator + "\",\n"
+                + "          \"name\": \"Alice\"\n"
+                + "        }\n"
+                + "      ]\n"
+                + "    },\n"
+                + "    {\n"
+                + "      \"id\": \"" + emptyGroup + "\",\n"
+                + "      \"name\": \"空成员群\",\n"
+                + "      \"creator\": \"" + creator + "\",\n"
+                + "      \"members\": []\n"
+                + "    }\n"
+                + "  ]\n"
+                + "}\n");
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            check("store -> reads a Fabric-written file (2 of 3 groups; empty group dropped)",
+                GroupRegistry.groupCount() == 2);
+            GroupRegistry.Group fabric = GroupRegistry.byId(fabricGroup.toString());
+            check("store -> fabric group name/creator/members",
+                fabric != null && "Fabric 写的群".equals(fabric.name())
+                    && creator.equals(fabric.creator()) && fabric.size() == 2);
+            check("store -> offline member name preserved",
+                fabric != null && "离线成员".equals(fabric.memberList().get(1).name()));
+            GroupRegistry.Group noCreator = GroupRegistry.byId(noCreatorGroup.toString());
+            check("store -> empty creator string -> null creator (Fabric semantics)",
+                noCreator != null && noCreator.creator() == null && "".equals(noCreator.name()));
+            check("store -> missing pendingInvites key is fine", GroupRegistry.pendingCount() == 0);
+
+            // 未知顶层键（未来版本 / 别家实现）不破坏解析
+            writeText(file, readText(file).replace("\"version\": 1,",
+                "\"version\": 1,\n  \"schema\": 7,"));
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            check("store -> unknown top-level keys ignored", GroupRegistry.groupCount() == 2);
+
+            // ---- 8. 坏文件：不崩、不覆盖（方便运维手工修）
+            String broken = "{ this is definitely not json";
+            writeText(file, broken);
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            check("store -> malformed file -> empty, no crash", GroupRegistry.groupCount() == 0);
+            check("store -> malformed file left untouched", broken.equals(readText(file)));
+
+            // ---- 9. 保存失败：旧文件不被破坏、内存态照常更新
+            GroupRegistry.reset();
+            GroupRegistry.init(plugin, file);
+            GroupRegistry.create(aliceP, new GroupInbound.Create("写盘失败测试", List.of()));
+            UUID failing = onlyGroup().id();
+            String good = readText(file);
+            boolean readOnlySet = file.toFile().setWritable(false);
+            alice.clear();
+            GroupRegistry.rename(aliceP, new GroupInbound.Rename(failing.toString(), "失败了也不能崩"));
+            check("store -> failed save keeps previous file byte-identical",
+                readOnlySet && good.equals(readText(file)));
+            check("store -> failed save leaves no temp file", !Files.exists(tmp));
+            check("store -> failed save still updates memory",
+                "失败了也不能崩".equals(onlyGroup().name()));
+            check("store -> failure is logged (no exception escapes)",
+                logged("store save failed | via=rename"));
+            file.toFile().setWritable(true);
+        } finally {
+            // 尽力清理临时目录（文件句柄都已关闭，Windows 上可以直接删）
+            try {
+                Files.deleteIfExists(tmp);
+                Files.deleteIfExists(file);
+                Path serverconfig = file.getParent();
+                if (serverconfig != null) {
+                    Files.deleteIfExists(serverconfig);
+                }
+                Files.deleteIfExists(dir);
+            } catch (Throwable ignored) {
+                // 清理失败不影响校验结论
+            }
+            GroupRegistry.reset();
+        }
+    }
+
+    private static String readText(Path path) throws Exception {
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+    }
+
+    private static void writeText(Path path, String text) throws Exception {
+        Files.write(path, text.getBytes(StandardCharsets.UTF_8));
+    }
+
     // ---------------------------------------------------------------- 解码器（用本插件自己的 Reader）
 
     static final class Sync {
@@ -682,5 +904,15 @@ public final class GroupFlowCheck {
             failures.add(name);
         }
         System.out.println((condition ? "[ok]   " : "[FAIL] ") + name);
+    }
+
+    /** 假 Logger 收下来的服务端日志里是否出现过某段文字（用来断言「只记日志、不崩」）。 */
+    private static boolean logged(String fragment) {
+        for (String line : serverLog) {
+            if (line != null && line.contains(fragment)) {
+                return true;
+            }
+        }
+        return false;
     }
 }
