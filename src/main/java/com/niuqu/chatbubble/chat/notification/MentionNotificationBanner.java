@@ -5,6 +5,7 @@ import com.niuqu.chatbubble.render.Animation;
 import com.niuqu.chatbubble.render.AnimationStyle;
 import com.niuqu.chatbubble.render.Appearance;
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
+import com.niuqu.chatbubble.compat.BossBarCompat;
 import com.niuqu.chatbubble.compat.DangoMusicCompat;
 import com.niuqu.chatbubble.compat.JadeCompat;
 import com.niuqu.chatbubble.store.ChatMessageStore;
@@ -46,7 +47,10 @@ public class MentionNotificationBanner {
     private static final float COMPACT_SCALE = 0.75f;
     private static final int STACK_GAP = 4;
     /** Jade 描述框与横幅之间的最小间距（px）。 */
+    /** Jade 描述框与横幅之间的最小间距（px）。 */
     private static final int JADE_GAP = 6;
+    /** Boss 血条底边与横幅之间的最小间距（px）。 */
+    private static final int BOSS_GAP = 4;
     /** 避让下压的平滑时间常数（ms），避免描述框闪出闪没时横幅抖动。 */
     private static final double JADE_SHIFT_TAU_MS = 90.0;
     private static final UUID NIL_UUID = new UUID(0, 0);
@@ -56,8 +60,9 @@ public class MentionNotificationBanner {
     private final List<ExitingBanner> exiting = new ArrayList<>();
 
     /** Jade 描述框避让的当前下压量（平滑过渡）与其上次采样时间。 */
-    private float jadeShift;
-    private long jadeShiftLastMs;
+    /** 顶部避让（Jade 描述框 / Boss 血条）的当前下压量（平滑过渡）与其上次采样时间。 */
+    private float topShift;
+    private long topShiftLastMs;
     /** Last logged stack sizes, so the debug line only fires on change. */
     private int lastLoggedVisible = -1;
     private int lastLoggedExiting = -1;
@@ -133,7 +138,7 @@ public class MentionNotificationBanner {
         long now = System.currentTimeMillis();
         // DangoMusic 联动：每帧喂一次音乐岛（没装 DangoMusic 时 poll() 恒 null，无副作用）
         MusicIslandBanner.INSTANCE.tick(DangoMusicCompat.poll());
-        updateJadeShift(now);
+        updateTopShift(now);
 
         // Natural expiry: snapshot every current position, remove expired banners,
         // then let the remaining ones push up to fill the gaps.
@@ -267,16 +272,25 @@ public class MentionNotificationBanner {
     }
 
     /**
-     * Jade(玉) 兼容：描述框显示且与本叠横幅在水平方向有重叠时，把横幅整体下压到描述框下方，
-     * 否则回到用户配置的顶部偏移。下压量做指数平滑，避免一边走一边看方块时横幅上下抖动。
+     * 顶部避让：Jade(玉) 的描述框、以及原版 Boss 血条出现在屏幕顶部中间时，把横幅整体下压到
+     * 它们下方；两者都不在时回到用户配置的顶部偏移。下压量做指数平滑，避免一边走一边看方块 /
+     * 打 BOSS 时横幅上下抖动。两个条件同时成立时取更靠下的那个（取 max，不相加）。
      */
-    private void updateJadeShift(long now) {
+    private void updateTopShift(long now) {
+        Minecraft mc = Minecraft.getInstance();
+        int screenW = mc.getWindow().getGuiScaledWidth();
+        int screenH = mc.getWindow().getGuiScaledHeight();
+        int offsetY = ChatBubbleClientSetup.config().bannerOffsetY();
         float target = 0f;
+
+        // 原版 Boss 血条固定水平居中（宽 182），与本叠横幅必然水平重叠，所以不做水平判定
+        int bossBottom = BossBarCompat.bottomPx();
+        if (bossBottom > 0) {
+            target = bossBottom + BOSS_GAP - offsetY;
+        }
+
         JadeCompat.Rect jade = JadeCompat.tooltipRect();
         if (jade != null) {
-            Minecraft mc = Minecraft.getInstance();
-            int screenW = mc.getWindow().getGuiScaledWidth();
-            int screenH = mc.getWindow().getGuiScaledHeight();
             float centerX = screenW / 2f + ChatBubbleClientSetup.config().bannerOffsetX();
             float halfW = 0f;
             for (ActiveBanner b : banners) halfW = Math.max(halfW, b.data.bannerW / 2f);
@@ -284,36 +298,36 @@ public class MentionNotificationBanner {
             if (halfW <= 0f) halfW = 100f;
             boolean overlapsX = jade.x() < centerX + halfW && jade.right() > centerX - halfW;
             if (overlapsX) {
-                target = jade.bottom() + JADE_GAP - ChatBubbleClientSetup.config().bannerOffsetY();
-                // 描述框在屏幕下方时，下压也要保证横幅留在屏幕内
-                target = Math.max(0f, Math.min(target, screenH - 48f));
+                target = Math.max(target, jade.bottom() + JADE_GAP - offsetY);
             }
         }
+        // 避让目标在屏幕下方时，下压也要保证横幅留在屏幕内
+        target = Math.max(0f, Math.min(target, screenH - 48f));
 
-        if (jadeShiftLastMs == 0L) {
-            jadeShift = target;
-            jadeShiftLastMs = now;
+        if (topShiftLastMs == 0L) {
+            topShift = target;
+            topShiftLastMs = now;
             return;
         }
-        float dt = Math.min(250f, Math.max(0f, now - jadeShiftLastMs));
-        jadeShiftLastMs = now;
+        float dt = Math.min(250f, Math.max(0f, now - topShiftLastMs));
+        topShiftLastMs = now;
         if (dt <= 0f) return;
         float k = 1f - (float) Math.exp(-dt / JADE_SHIFT_TAU_MS);
-        jadeShift += (target - jadeShift) * k;
-        if (Math.abs(target - jadeShift) < 0.5f) jadeShift = target;
+        topShift += (target - topShift) * k;
+        if (Math.abs(target - topShift) < 0.5f) topShift = target;
     }
 
-    /** 横幅叠顶部 Y：用户配置的顶部偏移 + Jade 避让下压量 + 音乐岛让位量。 */
+    /** 横幅叠顶部 Y：用户配置的顶部偏移 + 顶部避让下压量 + 音乐岛让位量。 */
     private float stackTopY() {
-        float own = ChatBubbleClientSetup.config().bannerOffsetY() + jadeShift;
+        float own = ChatBubbleClientSetup.config().bannerOffsetY() + topShift;
         // 聊天面板打开时音乐岛画在面板下方（屏内只画 @ 横幅），此时不让位
         if (musicIslandSuppressed) return own;
         int shift = MusicIslandBanner.INSTANCE.stackShift();
         if (shift <= 0) return own;
-        // 两个胶囊的 Jade 下压各自独立平滑（水平重叠判定用的半宽不同），所以不能只加
+        // 两个胶囊的避让下压各自独立平滑（水平重叠判定用的半宽不同），所以不能只加
         // 固定高度：取「本横幅自己的下压 + 让位量」与本岛真实底边的较大者，任何情况下都不重叠。
         float islandBottom = ChatBubbleClientSetup.config().bannerOffsetY()
-            + MusicIslandBanner.INSTANCE.jadeShiftPx()
+            + MusicIslandBanner.INSTANCE.topShiftPx()
             + MusicIslandBanner.INSTANCE.heightPx() + STACK_GAP;
         return Math.max(own + shift, islandBottom);
     }
