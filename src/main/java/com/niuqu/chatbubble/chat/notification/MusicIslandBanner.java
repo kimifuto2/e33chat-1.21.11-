@@ -1,6 +1,7 @@
 package com.niuqu.chatbubble.chat.notification;
 
 import com.niuqu.chatbubble.ChatBubbleClientSetup;
+import com.niuqu.chatbubble.compat.BossBarCompat;
 import com.niuqu.chatbubble.compat.CoverTextureCache;
 import com.niuqu.chatbubble.compat.DangoMusicCompat;
 import com.niuqu.chatbubble.compat.JadeCompat;
@@ -21,7 +22,7 @@ import java.util.List;
  * 灵动岛 × DangoMusic 联动胶囊。
  *
  * <p>与 {@link MentionNotificationBanner}（@ 横幅）同位置（顶部居中，含 bannerOffsetX/Y 与
- * Jade 避让）、宽度口径一致，高度略矮（{@value #H}，@ 横幅为 36）—— 本岛没有底部进度条，
+ * Jade 描述框 / 原版 Boss 血条避让）、宽度口径一致，高度略矮（{@value #H}，@ 横幅为 36）—— 本岛没有底部进度条，
  * 只留封面/曲名/艺术家/时间，所以不再为进度条预留底部内边距。独立一层：先画本岛，@ 横幅
  * 再按 {@link #stackShift()} 下移，两者不会重叠。
  *
@@ -69,6 +70,8 @@ public final class MusicIslandBanner {
     private static final int SHADOW_OFF = UiTokens.SHADOW_OFFSET_PANEL;
     /** Jade 描述框与胶囊之间的最小间距（与 @ 横幅一致）。 */
     private static final int JADE_GAP = 6;
+    /** Boss 血条底边与胶囊之间的最小间距（血条是原版 HUD，位置不能动，只能胶囊让位）。 */
+    private static final int BOSS_GAP = 4;
     private static final double JADE_SHIFT_TAU_MS = 90.0;
 
     private float alpha;
@@ -76,9 +79,9 @@ public final class MusicIslandBanner {
     private long holdUntilMs;
     private DangoMusicCompat.NowPlaying now;
 
-    /** Jade 描述框避让的平滑下压量（本岛自己的，与 @ 横幅同公式）。 */
-    private float jadeShift;
-    private long jadeShiftLastMs;
+    /** 顶部避让（Jade 描述框 / Boss 血条）的平滑下压量（本岛自己的，与 @ 横幅同公式）。 */
+    private float topShift;
+    private long topShiftLastMs;
 
     private MusicIslandBanner() {}
 
@@ -103,7 +106,7 @@ public final class MusicIslandBanner {
         if (alpha < 0f) alpha = 0f;
         if (alpha > 1f) alpha = 1f;
         if (alpha <= 0f) this.now = null;   // 完全淡出后释放快照
-        updateJadeShift(nowMs);
+        updateTopShift(nowMs);
     }
 
     /** 当前不透明度（0..1）。 */
@@ -122,11 +125,11 @@ public final class MusicIslandBanner {
     }
 
     /**
-     * 本岛被 Jade 描述框下压的当前量（px，已平滑）。
+     * 本岛被顶部元素（Jade 描述框 / 原版 Boss 血条）下压的当前量（px，已平滑）。
      * @ 横幅用它与 {@link #heightPx()} 算出本岛的真实底边，保证两者不会重叠。
      */
-    public int jadeShiftPx() {
-        return (int) jadeShift;
+    public int topShiftPx() {
+        return (int) topShift;
     }
 
     /**
@@ -176,7 +179,7 @@ public final class MusicIslandBanner {
         int cornerRadius = ChatBubbleClientSetup.config().bannerCornerRadius();
         int x = (screenW - w) / 2 + ChatBubbleClientSetup.config().bannerOffsetX();
         // 用户决定：不为 DangoMusic 自带的灵动岛让位（他会自己关掉那个岛），本岛位置固定不动
-        int y = (int) (ChatBubbleClientSetup.config().bannerOffsetY() + jadeShift);
+        int y = (int) (ChatBubbleClientSetup.config().bannerOffsetY() + topShift);
         int iy = y;
 
         float bgAlphaMul = alpha * cfgAlphaMul;
@@ -261,33 +264,47 @@ public final class MusicIslandBanner {
         return cut + "...";
     }
 
-    /** 与 @ 横幅同一套 Jade 避让：描述框压到顶部中间时，把胶囊下压到描述框下方。 */
-    private void updateJadeShift(long nowMs) {
+    /**
+     * 顶部避让：Jade 描述框压到顶部中间时把胶囊下压到描述框下方；原版 Boss 血条显示时
+     * 同样下压到血条下方（血条是原版 HUD，位置不能动，只能胶囊让位）。
+     *
+     * <p>两个条件同时成立时取**更靠下**的那个（取 max，不相加），下压量做指数平滑，
+     * 避免打 BOSS 时胶囊突然跳位。Boss 血条固定水平居中（宽 182）且本岛也居中，
+     * 所以不做水平重叠判定，屏上有血条就整体让位。
+     */
+    private void updateTopShift(long nowMs) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        int screenW = mc.getWindow().getScaledWidth();
+        int screenH = mc.getWindow().getScaledHeight();
+        int offsetY = ChatBubbleClientSetup.config().bannerOffsetY();
         float target = 0f;
+
+        int bossBottom = BossBarCompat.bottomPx();
+        if (bossBottom > 0) {
+            target = bossBottom + BOSS_GAP - offsetY;
+        }
+
         JadeCompat.Rect jade = JadeCompat.tooltipRect();
         if (jade != null) {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            int screenW = mc.getWindow().getScaledWidth();
-            int screenH = mc.getWindow().getScaledHeight();
             float centerX = screenW / 2f + ChatBubbleClientSetup.config().bannerOffsetX();
             float halfW = MAX_W / 2f + 16f;
             boolean overlapsX = jade.x() < centerX + halfW && jade.right() > centerX - halfW;
             if (overlapsX) {
-                target = jade.bottom() + JADE_GAP - ChatBubbleClientSetup.config().bannerOffsetY();
-                target = Math.max(0f, Math.min(target, screenH - 48f));
+                target = Math.max(target, jade.bottom() + JADE_GAP - offsetY);
             }
         }
+        target = Math.max(0f, Math.min(target, screenH - 48f));
 
-        if (jadeShiftLastMs == 0L) {
-            jadeShift = target;
-            jadeShiftLastMs = nowMs;
+        if (topShiftLastMs == 0L) {
+            topShift = target;
+            topShiftLastMs = nowMs;
             return;
         }
-        float dt = Math.min(250f, Math.max(0f, (float) (nowMs - jadeShiftLastMs)));
-        jadeShiftLastMs = nowMs;
+        float dt = Math.min(250f, Math.max(0f, (float) (nowMs - topShiftLastMs)));
+        topShiftLastMs = nowMs;
         if (dt <= 0f) return;
         float k = 1f - (float) Math.exp(-dt / JADE_SHIFT_TAU_MS);
-        jadeShift += (target - jadeShift) * k;
-        if (Math.abs(target - jadeShift) < 0.5f) jadeShift = target;
+        topShift += (target - topShift) * k;
+        if (Math.abs(target - topShift) < 0.5f) topShift = target;
     }
 }
